@@ -1,0 +1,417 @@
+---
+title: Monitoring Strategies
+description: Choosing the right deployment mode and thresholds for your PostgreSQL monitoring needs
+---
+
+# Monitoring Strategies
+
+Choosing the right monitoring strategy for pgwd depends on your infrastructure, alert requirements, and operational preferences. This guide covers deployment modes, threshold strategies, and testing approaches.
+
+## Deployment Modes
+
+pgwd offers three deployment patterns, each suited to different operational needs:
+
+### One-Shot Mode
+
+Runs a single check and exits immediately. Perfect for cron jobs or scheduled tasks.
+
+```bash
+# Run once and exit (interval defaults to 0)
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" \
+     -threshold-total 80 \
+     -slack-webhook "https://hooks.slack.com/services/..."
+
+# Explicit one-shot
+export PGWD_INTERVAL=0
+pgwd
+```
+
+<Tip>
+One-shot mode is ideal for:
+- Cron-based monitoring (e.g., every 5 minutes)
+- Integration with external schedulers
+- Resource-constrained environments where persistent processes aren't desired
+- Testing and validation workflows
+</Tip>
+
+### Daemon Mode
+
+Runs continuously, checking at regular intervals until stopped with SIGTERM or Ctrl+C.
+
+```bash
+# Check every 60 seconds
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" \
+     -threshold-total 80 \
+     -interval 60 \
+     -slack-webhook "https://hooks.slack.com/services/..."
+
+# Or via environment
+export PGWD_INTERVAL=60
+pgwd
+```
+
+<Tip>
+Daemon mode is best for:
+- Long-running watchers under systemd or supervisor
+- Environments where you want continuous monitoring
+- Cases where connection pooling reduces overhead
+- Centralized monitoring servers
+</Tip>
+
+### Systemd Timer (Cron Alternative)
+
+Combines one-shot execution with systemd's timer units for sophisticated scheduling.
+
+```bash
+# Install timer and service
+sudo cp contrib/systemd/pgwd-once.service /etc/systemd/system/
+sudo cp contrib/systemd/pgwd.timer /etc/systemd/system/
+
+# Create env file (no PGWD_INTERVAL needed)
+sudo tee /etc/pgwd.env > /dev/null << 'EOF'
+PGWD_DB_URL=postgres://user:pass@localhost:5432/mydb
+PGWD_THRESHOLD_TOTAL=80
+PGWD_SLACK_WEBHOOK=https://hooks.slack.com/services/...
+EOF
+sudo chmod 600 /etc/pgwd.env
+
+# Enable timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now pgwd.timer
+```
+
+<Note>
+Systemd timers offer advantages over cron:
+- Better logging via journalctl
+- Dependency management (run after network.target)
+- Missed run handling (persistent timers)
+- Resource control (memory/CPU limits)
+</Note>
+
+## Threshold Strategies
+
+### Multi-Tier Alert Levels
+
+When you don't set explicit thresholds, pgwd uses a **3-tier level system** that automatically scales with your `max_connections`:
+
+```bash
+# Default: 75% (attention), 85% (alert), 95% (danger)
+pgwd -db-url "postgres://..." -slack-webhook "https://..."
+
+# Custom levels
+pgwd -db-url "postgres://..." \
+     -threshold-levels 70,85,90 \
+     -slack-webhook "https://..."
+```
+
+**Behavior:**
+- Only the **highest breached level** fires per check
+- Slack messages show color-coded bars: yellow → orange → red
+- Loki labels include `level=attention|alert|danger`
+
+<Accordion title="Example: 3-tier system with max_connections=100">
+  With default levels (75,85,95):
+  - **75 connections**: Attention alert (yellow) fires
+  - **85 connections**: Alert level (orange) fires (attention suppressed)
+  - **95 connections**: Danger level (red) fires (lower levels suppressed)
+  
+  Only one notification per check, always the highest severity.
+</Accordion>
+
+### Explicit Thresholds
+
+Set specific connection counts for precise control:
+
+```bash
+# Total connections >= 80
+pgwd -db-url "postgres://..." \
+     -threshold-total 80 \
+     -slack-webhook "https://..."
+
+# Multiple thresholds in one run
+pgwd -db-url "postgres://..." \
+     -threshold-total 90 \
+     -threshold-idle 60 \
+     -threshold-active 50 \
+     -slack-webhook "https://..."
+```
+
+<CardGroup cols={2}>
+  <Card title="Total Connections" icon="database">
+    Use when monitoring overall capacity near `max_connections`
+    
+    ```bash
+    -threshold-total 80
+    ```
+  </Card>
+  
+  <Card title="Active Connections" icon="bolt">
+    Use for monitoring query load and long-running queries
+    
+    ```bash
+    -threshold-active 50
+    ```
+  </Card>
+  
+  <Card title="Idle Connections" icon="moon">
+    Use for pool size monitoring and connection waste
+    
+    ```bash
+    -threshold-idle 40
+    ```
+  </Card>
+  
+  <Card title="Stale Connections" icon="clock">
+    Use for connection leak detection (see [Stale Connections](/guides/stale-connections))
+    
+    ```bash
+    -stale-age 600 -threshold-stale 1
+    ```
+  </Card>
+</CardGroup>
+
+<Warning>
+When you set **one** explicit threshold (total or active), the other defaults to 80% of `max_connections` unless you override with `-default-threshold-percent`.
+
+```bash
+# Total=80, active defaults to 80% of max_connections
+pgwd -threshold-total 80 -slack-webhook "..."
+
+# Total=80, active=70% of max_connections
+pgwd -threshold-total 80 \
+     -default-threshold-percent 70 \
+     -slack-webhook "..."
+```
+</Warning>
+
+### Choosing the Right Strategy
+
+| Use Case | Recommendation |
+|----------|----------------|
+| **Getting started** | Use default 3-tier levels (75,85,95%) — no threshold flags needed |
+| **Production with standard capacity** | Customize levels: `-threshold-levels 70,80,90` |
+| **Specific capacity concerns** | Explicit thresholds: `-threshold-total 150` for a server with max_connections=200 |
+| **High-traffic applications** | Monitor active separately: `-threshold-active 100 -threshold-idle 50` |
+| **Connection leak hunting** | Add stale monitoring: `-stale-age 600 -threshold-stale 1` |
+
+## Testing Your Configuration
+
+### Dry Run: View Stats Without Alerts
+
+Test thresholds without sending notifications:
+
+```bash
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" \
+     -threshold-total 100 \
+     -dry-run
+
+# Output: total=42 active=3 idle=39
+```
+
+<Tip>
+Use dry-run to:
+- Discover current connection patterns before setting thresholds
+- Test database connectivity
+- Validate connection string formats
+- Debug port-forward issues with `-kube-postgres`
+</Tip>
+
+### Force Notification: Validate Delivery
+
+Send a test message regardless of thresholds:
+
+```bash
+# Test Slack delivery
+pgwd -db-url "postgres://..." \
+     -slack-webhook "https://hooks.slack.com/services/..." \
+     -force-notification
+
+# Test both Slack and Loki
+pgwd -db-url "postgres://..." \
+     -slack-webhook "https://..." \
+     -loki-url "http://localhost:3100/loki/api/v1/push" \
+     -force-notification
+```
+
+**What it validates:**
+- Webhook URL correctness
+- Network connectivity to Slack/Loki
+- Message formatting and appearance
+- Channel/stream configuration
+
+<Note>
+Force notification requires at least one configured notifier. The test event shows as `threshold=test` with `ThresholdValue=0`.
+</Note>
+
+### Test Max Connections: Simulate Low Limits
+
+Trigger alerts without actually changing your database configuration:
+
+```bash
+# Simulate max_connections=20 (actual server has 100)
+pgwd -db-url "postgres://..." \
+     -test-max-connections 20 \
+     -force-notification \
+     -slack-webhook "https://..."
+```
+
+**Behavior:**
+- Percentage thresholds calculated using the test value (20)
+- Stats remain **real** (actual connections from `pg_stat_activity`)
+- Notifications show `"(test override)"` to distinguish test mode
+- Total connections can exceed the test limit (since it's not real)
+
+<Accordion title="Example: Testing alerts with test-max-connections=20">
+  Server has `max_connections=100` with 42 active connections:
+  
+  ```bash
+  pgwd -db-url "postgres://..." \
+       -test-max-connections 20 \
+       -slack-webhook "https://..."
+  ```
+  
+  Result:
+  - Default thresholds become: 15 (75%), 17 (85%), 19 (95%)
+  - Since 42 > 19, danger alert fires
+  - Message shows: `total=42 ... (test override)` to indicate testing mode
+</Accordion>
+
+## Infrastructure Alerts
+
+### Connection Failure Monitoring
+
+When a notifier is configured, pgwd **always** sends alerts on connection failures:
+
+```bash
+# Automatic infrastructure alerts
+pgwd -db-url "postgres://unreachable:5432/mydb" \
+     -slack-webhook "https://..."
+```
+
+**Alert types:**
+- `connect_failure`: Connection refused, timeout, network unreachable
+- `too_many_clients`: Database at `max_connections` limit
+
+<Warning>
+No explicit flag needed for connection failure alerts. If you configure a notifier, you'll receive infrastructure alerts automatically.
+
+The deprecated `-notify-on-connect-failure` flag still exists for backward compatibility but is no longer required.
+</Warning>
+
+## Real-World Scenarios
+
+### Scenario 1: Cron Check Every 5 Minutes
+
+**Goal**: Regular checks without a persistent process.
+
+```bash
+# /usr/local/bin/pgwd-check.sh
+#!/bin/bash
+export PGWD_DB_URL="postgres://user:pass@localhost:5432/mydb"
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+# Default 3-tier levels used (75,85,95%)
+/usr/local/bin/pgwd
+```
+
+**Crontab:**
+```cron
+*/5 * * * * /usr/local/bin/pgwd-check.sh >> /var/log/pgwd.log 2>&1
+```
+
+### Scenario 2: Long-Running Watcher with systemd
+
+**Goal**: Continuous monitoring with automatic restart.
+
+```bash
+# /etc/pgwd.env
+PGWD_DB_URL=postgres://user:pass@localhost:5432/mydb
+PGWD_THRESHOLD_TOTAL=80
+PGWD_THRESHOLD_IDLE=50
+PGWD_SLACK_WEBHOOK=https://hooks.slack.com/services/...
+PGWD_INTERVAL=60
+```
+
+```bash
+sudo cp contrib/systemd/pgwd.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now pgwd
+```
+
+### Scenario 3: Connection Leak Detection
+
+**Goal**: Alert when connections stay open longer than 10 minutes.
+
+```bash
+pgwd -db-url "postgres://..." \
+     -stale-age 600 \
+     -threshold-stale 1 \
+     -interval 120 \
+     -slack-webhook "https://..."
+```
+
+See the [Stale Connections guide](/guides/stale-connections) for detailed patterns.
+
+### Scenario 4: Pre-Production Testing
+
+**Goal**: Validate configuration before going live.
+
+```bash
+# 1. Check current stats
+pgwd -db-url "postgres://..." -dry-run
+
+# 2. Test notification delivery
+pgwd -db-url "postgres://..." \
+     -slack-webhook "https://..." \
+     -force-notification
+
+# 3. Simulate alerts with low thresholds
+pgwd -db-url "postgres://..." \
+     -test-max-connections 10 \
+     -slack-webhook "https://..."
+```
+
+### Scenario 5: High-Availability Setup with Multiple Environments
+
+**Goal**: Monitor dev, staging, and production with environment-specific configs.
+
+See the [Multi-Environment Setup guide](/guides/multi-environment) for comprehensive patterns.
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Start Conservative" icon="shield">
+    Begin with default 3-tier levels (75,85,95%) and adjust based on observed patterns
+  </Card>
+  
+  <Card title="Test First" icon="flask">
+    Always use `-dry-run` and `-force-notification` before production deployment
+  </Card>
+  
+  <Card title="Monitor Multiple Dimensions" icon="chart-line">
+    Combine total, active, idle, and stale thresholds for comprehensive coverage
+  </Card>
+  
+  <Card title="Log Everything" icon="file-lines">
+    Redirect output to log files for troubleshooting: `>> /var/log/pgwd.log 2>&1`
+  </Card>
+</CardGroup>
+
+<Tip>
+**Choosing intervals:**
+- **High-traffic apps**: 30-60 seconds
+- **Standard production**: 60-120 seconds  
+- **Low-priority dev/staging**: 300 seconds (5 minutes)
+- **Cron jobs**: Match your operational response time (typically 5 minutes)
+</Tip>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Stale Connections" icon="clock" href="/guides/stale-connections">
+    Learn about connection leak detection and stale connection monitoring
+  </Card>
+  
+  <Card title="Multi-Environment" icon="layer-group" href="/guides/multi-environment">
+    Set up pgwd across multiple environments and Kubernetes clusters
+  </Card>
+</CardGroup>

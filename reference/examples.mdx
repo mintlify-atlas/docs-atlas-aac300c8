@@ -1,0 +1,580 @@
+---
+title: Examples
+description: Complete working examples of pgwd configurations
+---
+
+# Examples
+
+Complete working examples for common pgwd use cases.
+
+## Basic Usage
+
+### One-Shot Check with Slack
+
+Run once, alert to Slack if total connections exceed 80.
+
+```bash
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" \
+     -threshold-total 80 \
+     -slack-webhook "https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXX"
+```
+
+**Use case:** Cron job that checks every 5 minutes.
+
+**Exit behavior:** Exits after one check. Exit code 0 on success.
+
+---
+
+### Daemon Mode with Loki
+
+Run continuously, check every 60 seconds, send alerts to Loki.
+
+```bash
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" \
+     -threshold-total 80 \
+     -threshold-idle 50 \
+     -interval 60 \
+     -loki-url "http://localhost:3100/loki/api/v1/push" \
+     -loki-labels "app=pgwd,env=prod"
+```
+
+**Use case:** Long-running service under systemd or Docker.
+
+**Exit behavior:** Runs until interrupted (Ctrl+C or SIGTERM).
+
+---
+
+### Dry Run for Testing
+
+Check connection stats without sending notifications.
+
+```bash
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" -dry-run
+```
+
+**Output:**
+```
+total=42 active=3 idle=39 max_connections=100
+```
+
+**Use case:** Verify connectivity and see current connection counts before configuring alerts.
+
+---
+
+## Three-Tier Alert Levels
+
+### Default Levels (75%, 85%, 95%)
+
+Use percentage-based thresholds with default levels.
+
+```bash
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" \
+     -slack-webhook "https://hooks.slack.com/services/..."
+```
+
+When both `-threshold-total` and `-threshold-active` are 0 (not set), pgwd automatically uses 3-tier levels:
+- **75%** → attention (yellow)
+- **85%** → alert (orange)
+- **95%** → danger (red)
+
+Only the highest breached level triggers an alert.
+
+---
+
+### Custom Levels
+
+Customize the three threshold percentages.
+
+```bash
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" \
+     -threshold-levels 70,85,90 \
+     -slack-webhook "https://hooks.slack.com/services/..."
+```
+
+**Use case:** Adjust sensitivity based on your database workload and max_connections.
+
+---
+
+## Multiple Thresholds
+
+### Total, Idle, and Stale Detection
+
+Combine multiple threshold types in one run.
+
+```bash
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" \
+     -threshold-total 90 \
+     -threshold-idle 60 \
+     -stale-age 600 \
+     -threshold-stale 1 \
+     -interval 120 \
+     -slack-webhook "https://hooks.slack.com/services/..." \
+     -loki-url "http://localhost:3100/loki/api/v1/push"
+```
+
+**Alerts sent when:**
+- Total connections ≥ 90, OR
+- Idle connections ≥ 60, OR
+- ≥ 1 connection open longer than 10 minutes (600 seconds)
+
+Each exceeded threshold generates a separate alert (same run can send multiple events to both Slack and Loki).
+
+---
+
+## Kubernetes
+
+### Connect via Service
+
+Connect to Postgres running in Kubernetes via `kubectl port-forward`.
+
+```bash
+pgwd -kube-postgres default/svc/postgres \
+     -db-url "postgres://postgres:mypassword@localhost:5432/mydb" \
+     -threshold-total 80 \
+     -slack-webhook "https://hooks.slack.com/services/..."
+```
+
+**Requirements:**
+- `kubectl` in PATH
+- Valid kubeconfig with access to the `default` namespace
+- Database URL uses `localhost` and port `5432` (matches `-kube-local-port` default)
+
+---
+
+### Password Discovery from Pod
+
+Automatically read the password from the pod's environment.
+
+```bash
+pgwd -kube-postgres default/svc/postgres \
+     -db-url "postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/mydb" \
+     -threshold-total 80 \
+     -slack-webhook "https://hooks.slack.com/services/..."
+```
+
+The literal string `DISCOVER_MY_PASSWORD` in the URL tells pgwd to read the password from the pod's `POSTGRES_PASSWORD` environment variable.
+
+**Custom password variable:**
+
+```bash
+pgwd -kube-postgres default/pod/postgres-0 \
+     -kube-password-var PGPASSWORD \
+     -db-url "postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/mydb" \
+     -slack-webhook "https://hooks.slack.com/services/..."
+```
+
+---
+
+### Multiple Kubernetes Contexts
+
+Target a specific cluster when you have multiple contexts in kubeconfig.
+
+```bash
+pgwd -kube-postgres production/svc/postgres \
+     -kube-context production \
+     -db-url "postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/mydb" \
+     -threshold-total 80 \
+     -slack-webhook "https://hooks.slack.com/services/..."
+```
+
+**Validate access first:**
+
+```bash
+# Check connectivity to production context
+pgwd -validate-k8s-access -kube-context production
+```
+
+---
+
+### Monitor Multiple Services
+
+Use different local ports for each service to avoid port conflicts.
+
+<CodeGroup>
+
+```bash Service A
+pgwd -kube-postgres mynamespace/svc/postgres-a \
+     -kube-local-port 15432 \
+     -db-url "postgres://postgres:DISCOVER_MY_PASSWORD@localhost:15432/db_a" \
+     -threshold-total 80 \
+     -slack-webhook "https://hooks.slack.com/services/..."
+```
+
+```bash Service B
+pgwd -kube-postgres mynamespace/svc/postgres-b \
+     -kube-local-port 15433 \
+     -db-url "postgres://postgres:DISCOVER_MY_PASSWORD@localhost:15433/db_b" \
+     -threshold-total 80 \
+     -slack-webhook "https://hooks.slack.com/services/..."
+```
+
+```bash Service C
+pgwd -kube-postgres mynamespace/svc/postgres-c \
+     -kube-local-port 15434 \
+     -db-url "postgres://postgres:DISCOVER_MY_PASSWORD@localhost:15434/db_c" \
+     -threshold-total 80 \
+     -slack-webhook "https://hooks.slack.com/services/..."
+```
+
+</CodeGroup>
+
+**Bash script example** (checks all three services):
+
+```bash
+#!/bin/bash
+export KUBECONFIG=/path/to/kubeconfig
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+export PATH="/usr/local/bin:$PATH"
+
+PGWD=${PGWD:-/usr/local/bin/pgwd}
+
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) checking postgres-a"
+$PGWD -kube-postgres mynamespace/svc/postgres-a \
+  -kube-local-port 15432 \
+  -db-url 'postgres://postgres:DISCOVER_MY_PASSWORD@localhost:15432/db_a'
+
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) checking postgres-b"
+$PGWD -kube-postgres mynamespace/svc/postgres-b \
+  -kube-local-port 15433 \
+  -db-url 'postgres://postgres:DISCOVER_MY_PASSWORD@localhost:15433/db_b'
+
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) checking postgres-c"
+$PGWD -kube-postgres mynamespace/svc/postgres-c \
+  -kube-local-port 15434 \
+  -db-url 'postgres://postgres:DISCOVER_MY_PASSWORD@localhost:15434/db_c'
+
+exit 0
+```
+
+Run from cron:
+
+```cron
+*/5 * * * * /bin/bash -l -c '~/bin/pgwd-check.sh >> ~/log/pgwd.log 2>&1'
+```
+
+---
+
+## Stale Connection Detection
+
+### Alert on Connection Leaks
+
+Detect connections that stay open too long (potential leaks).
+
+```bash
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" \
+     -stale-age 600 \
+     -threshold-stale 1 \
+     -interval 60 \
+     -slack-webhook "https://hooks.slack.com/services/..."
+```
+
+**Alert condition:** Any connection open longer than 10 minutes (600 seconds).
+
+**Use case:** Detect application bugs that don't close connections properly.
+
+---
+
+### Aggressive Stale Detection
+
+Use shorter stale age for API services with short-lived connections.
+
+```bash
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" \
+     -stale-age 300 \
+     -threshold-stale 5 \
+     -interval 60 \
+     -slack-webhook "https://hooks.slack.com/services/..."
+```
+
+**Alert condition:** 5 or more connections open longer than 5 minutes.
+
+**Use case:** APIs where connections should be very short-lived.
+
+---
+
+## Environment Variables
+
+### Using Only Environment Variables
+
+Set all configuration via environment, no CLI flags needed.
+
+```bash
+export PGWD_DB_URL="postgres://user:pass@localhost:5432/mydb"
+export PGWD_THRESHOLD_TOTAL=80
+export PGWD_THRESHOLD_IDLE=50
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+export PGWD_INTERVAL=60
+
+pgwd
+```
+
+**Use case:** Containerized deployments, systemd services.
+
+---
+
+### Environment with CLI Override
+
+Set defaults via environment, override specific values with CLI flags.
+
+```bash
+export PGWD_DB_URL="postgres://localhost:5432/mydb"
+export PGWD_THRESHOLD_TOTAL=80
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+
+# Override DB host for production
+pgwd -db-url "postgres://prod-host:5432/mydb" -interval 0
+
+# Override threshold for testing
+pgwd -threshold-total 5 -dry-run
+```
+
+---
+
+### systemd Environment File
+
+Create `/etc/pgwd.env`:
+
+```bash
+PGWD_DB_URL=postgres://user:pass@localhost:5432/mydb
+PGWD_THRESHOLD_TOTAL=80
+PGWD_THRESHOLD_IDLE=50
+PGWD_SLACK_WEBHOOK=https://hooks.slack.com/services/...
+PGWD_LOKI_URL=http://localhost:3100/loki/api/v1/push
+PGWD_INTERVAL=60
+```
+
+Set permissions:
+
+```bash
+sudo chmod 600 /etc/pgwd.env
+```
+
+Load in systemd unit:
+
+```ini
+[Service]
+EnvironmentFile=-/etc/pgwd.env
+ExecStart=/usr/local/bin/pgwd
+```
+
+See [systemd setup in README](https://github.com/hrodrig/pgwd#systemd) for complete unit files.
+
+---
+
+## Testing and Validation
+
+### Force Notification Test
+
+Send test alert to validate delivery and format.
+
+```bash
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" \
+     -slack-webhook "https://hooks.slack.com/services/..." \
+     -force-notification
+```
+
+**Sends:** One test notification regardless of thresholds.
+
+**Use case:** Verify Slack/Loki integration before relying on real alerts.
+
+---
+
+### Test with Override max_connections
+
+Simulate alerts without a real low max_connections.
+
+```bash
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" \
+     -test-max-connections 20 \
+     -force-notification \
+     -slack-webhook "https://hooks.slack.com/services/..."
+```
+
+**Effect:**
+- Thresholds calculated as if `max_connections = 20`
+- Notifications show "(test override)"
+- Actual connection stats remain real and can exceed 20
+
+**Use case:** Test alert formatting and threshold logic without impacting production.
+
+---
+
+### Heartbeat Check
+
+Regular "still alive" notification.
+
+```bash
+#!/bin/bash
+# Run every 2 hours
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" \
+     -force-notification
+```
+
+Schedule in cron:
+
+```cron
+0 */2 * * * /usr/local/bin/pgwd-heartbeat.sh >> /var/log/pgwd-heartbeat.log 2>&1
+```
+
+---
+
+## Docker
+
+### One-Shot in Container
+
+Run once and exit.
+
+```bash
+docker run --rm \
+  -e PGWD_DB_URL="postgres://user:pass@host.docker.internal:5432/mydb" \
+  -e PGWD_THRESHOLD_TOTAL=80 \
+  -e PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..." \
+  ghcr.io/hrodrig/pgwd:latest
+```
+
+---
+
+### Daemon in Container
+
+Run continuously in background.
+
+```bash
+docker run -d --name pgwd \
+  -e PGWD_DB_URL="postgres://user:pass@host.docker.internal:5432/mydb" \
+  -e PGWD_THRESHOLD_TOTAL=80 \
+  -e PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..." \
+  -e PGWD_INTERVAL=60 \
+  ghcr.io/hrodrig/pgwd:latest
+```
+
+View logs:
+
+```bash
+docker logs -f pgwd
+```
+
+Stop:
+
+```bash
+docker stop pgwd && docker rm pgwd
+```
+
+---
+
+### Docker Compose
+
+Run pgwd alongside other services.
+
+```yaml
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: mydb
+    ports:
+      - "5432:5432"
+
+  pgwd:
+    image: ghcr.io/hrodrig/pgwd:latest
+    environment:
+      PGWD_DB_URL: postgres://postgres:secret@postgres:5432/mydb
+      PGWD_THRESHOLD_TOTAL: 80
+      PGWD_SLACK_WEBHOOK: https://hooks.slack.com/services/...
+      PGWD_INTERVAL: 60
+    depends_on:
+      - postgres
+```
+
+Run:
+
+```bash
+docker-compose up -d
+docker-compose logs -f pgwd
+```
+
+---
+
+## Complete Production Setup
+
+### High-Availability Monitoring
+
+Full production configuration with multiple thresholds, both notifiers, and context.
+
+```bash
+export PGWD_DB_URL="postgres://pgwd_monitor:SECRET@postgres.prod.internal:5432/app_db"
+export PGWD_THRESHOLD_LEVELS="75,85,95"
+export PGWD_THRESHOLD_IDLE=60
+export PGWD_STALE_AGE=600
+export PGWD_THRESHOLD_STALE=5
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+export PGWD_LOKI_URL="http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push"
+export PGWD_LOKI_LABELS="app=pgwd,env=prod,cluster=k8s-prod,region=us-east-1"
+export PGWD_CLUSTER="k8s-prod"
+export PGWD_CLIENT="app-db-primary"
+export PGWD_INTERVAL=60
+
+pgwd
+```
+
+**Features:**
+- 3-tier percentage-based alerts
+- Idle connection monitoring
+- Stale connection leak detection
+- Dual notifications (Slack + Loki)
+- Rich context labels
+- Daemon mode (60s interval)
+
+---
+
+## Cron Examples
+
+### Every 5 Minutes
+
+```cron
+PATH=/usr/local/bin:/usr/bin:/bin
+*/5 * * * * /usr/local/bin/pgwd -db-url "postgres://..." -threshold-total 80 -slack-webhook "https://..." >> /var/log/pgwd.log 2>&1
+```
+
+---
+
+### Using Environment File
+
+Create `~/.pgwd.env`:
+
+```bash
+export PGWD_DB_URL="postgres://user:pass@localhost:5432/mydb"
+export PGWD_THRESHOLD_TOTAL=80
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+```
+
+Crontab:
+
+```cron
+*/5 * * * * /bin/bash -c 'source ~/.pgwd.env && /usr/local/bin/pgwd' >> /var/log/pgwd.log 2>&1
+```
+
+---
+
+### Kubernetes Cron with Multiple Services
+
+See [Monitor Multiple Services](#monitor-multiple-services) above for the complete bash script.
+
+```cron
+PATH=/usr/bin:/bin
+*/5 * * * * /bin/bash -l -c '~/bin/pgwd-cron.sh >> ~/log/pgwd.log 2>&1'
+0 */2 * * * /bin/bash -l -c '~/bin/pgwd-heartbeat.sh >> ~/log/pgwd.log 2>&1'
+```
+
+---
+
+## Next Steps
+
+- [CLI Reference](/reference/cli) - Complete flag documentation
+- [Environment Variables](/reference/environment-variables) - All environment variables
+- [Troubleshooting](/reference/troubleshooting) - Common issues and solutions
+- [GitHub Repository](https://github.com/hrodrig/pgwd) - Source code and releases

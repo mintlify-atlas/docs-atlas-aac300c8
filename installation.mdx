@@ -1,0 +1,211 @@
+---
+title: Installation
+description: Install pgwd on Linux, macOS, or Windows
+---
+
+pgwd is distributed as a single binary with no external dependencies (except `kubectl` if using Kubernetes features). Choose the installation method that works best for your environment.
+
+## Install from source (recommended)
+
+Requires Go 1.26 or later:
+
+```bash
+go install github.com/hrodrig/pgwd@latest
+```
+
+This installs the binary to `$GOBIN` (default `$HOME/go/bin`). Ensure `$GOBIN` is on your `PATH`:
+
+```bash
+export PATH="$HOME/go/bin:$PATH"
+```
+
+<Note>
+  Add the export line to your shell profile (`~/.bashrc`, `~/.zshrc`) to make it permanent.
+</Note>
+
+Verify the installation:
+
+```bash
+pgwd --version
+```
+
+## Homebrew (macOS)
+
+Install from the official tap:
+
+```bash
+brew install hrodrig/pgwd/pgwd
+```
+
+Homebrew handles PATH configuration automatically.
+
+## Pre-built binaries
+
+Download the latest release for your platform from [GitHub Releases](https://github.com/hrodrig/pgwd/releases).
+
+<Steps>
+  <Step title="Choose your platform">
+    Available binaries:
+    - **Linux**: amd64, arm64 (tar.gz, .deb, .rpm)
+    - **macOS**: amd64 (Intel), arm64 (Apple Silicon) (tar.gz)
+    - **Windows**: amd64, arm64 (zip)
+  </Step>
+  
+  <Step title="Download and extract">
+    <CodeGroup>
+      ```bash Linux (tar.gz)
+      wget https://github.com/hrodrig/pgwd/releases/download/v0.3.6/pgwd_0.3.6_linux_amd64.tar.gz
+      tar -xzf pgwd_0.3.6_linux_amd64.tar.gz
+      sudo mv pgwd /usr/local/bin/
+      sudo chmod +x /usr/local/bin/pgwd
+      ```
+      
+      ```bash macOS (tar.gz)
+      wget https://github.com/hrodrig/pgwd/releases/download/v0.3.6/pgwd_0.3.6_darwin_amd64.tar.gz
+      tar -xzf pgwd_0.3.6_darwin_amd64.tar.gz
+      sudo mv pgwd /usr/local/bin/
+      sudo chmod +x /usr/local/bin/pgwd
+      ```
+      
+      ```bash Linux (.deb)
+      wget https://github.com/hrodrig/pgwd/releases/download/v0.3.6/pgwd_0.3.6_amd64.deb
+      sudo dpkg -i pgwd_0.3.6_amd64.deb
+      ```
+      
+      ```bash Linux (.rpm)
+      wget https://github.com/hrodrig/pgwd/releases/download/v0.3.6/pgwd_0.3.6_amd64.rpm
+      sudo rpm -i pgwd_0.3.6_amd64.rpm
+      ```
+      
+      ```powershell Windows (zip)
+      # Download pgwd_0.3.6_windows_amd64.zip from releases
+      # Extract and add pgwd.exe to your PATH
+      ```
+    </CodeGroup>
+  </Step>
+  
+  <Step title="Verify installation">
+    ```bash
+    pgwd --version
+    ```
+    
+    You should see output like:
+    ```
+    pgwd v0.3.6 (commit abc1234, built 2026-03-05T12:00:00Z)
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  Replace `v0.3.6` with the latest version from the [Releases page](https://github.com/hrodrig/pgwd/releases).
+</Warning>
+
+## Build from source
+
+Build the latest development version:
+
+```bash
+git clone https://github.com/hrodrig/pgwd.git
+cd pgwd
+make build
+```
+
+The binary will be in `dist/pgwd`. To install it to `$GOBIN` (default `$HOME/go/bin`):
+
+```bash
+make install
+```
+
+Or specify a custom installation directory:
+
+```bash
+GOBIN=/usr/local/bin make install
+```
+
+### Cross-compilation
+
+Build for specific platforms:
+
+```bash
+make build-linux    # Linux amd64
+make build-darwin   # macOS amd64/arm64
+make build-windows  # Windows amd64
+make build-all      # All platforms
+```
+
+Output will be in `dist/`.
+
+## Docker image
+
+Use the official multi-arch image (linux/amd64, linux/arm64) from GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/hrodrig/pgwd:latest
+# or specific version
+docker pull ghcr.io/hrodrig/pgwd:v0.3.6
+```
+
+Verify the image:
+
+```bash
+docker run --rm ghcr.io/hrodrig/pgwd:latest --version
+```
+
+### Build Docker image locally
+
+```bash
+make docker-build
+```
+
+This injects version info (VERSION, COMMIT, BUILDDATE) via build args. Without `make`, the binary will report `dev`/`unknown`.
+
+<Note>
+  The Docker image runs as a non-root user (`pgwd`) on Alpine 3.23 with minimal dependencies (ca-certificates only).
+</Note>
+
+## Platform support
+
+| Platform | Architecture | Supported |
+|----------|--------------|----------|
+| Linux | amd64 | ✅ |
+| Linux | arm64 | ✅ |
+| macOS | amd64 (Intel) | ✅ |
+| macOS | arm64 (Apple Silicon) | ✅ |
+| Windows | amd64 | ✅ |
+| Windows | arm64 | ✅ |
+
+## Kubernetes requirements
+
+If you plan to use the `-kube-postgres` feature to connect to Postgres in Kubernetes:
+
+<Steps>
+  <Step title="Install kubectl">
+    Ensure `kubectl` is installed and in your `PATH`:
+    
+    ```bash
+    which kubectl
+    ```
+    
+    Install from [kubernetes.io/docs/tasks/tools](https://kubernetes.io/docs/tasks/tools/).
+  </Step>
+  
+  <Step title="Configure kubeconfig">
+    Set up your kubeconfig file with cluster access:
+    
+    ```bash
+    kubectl get pods
+    ```
+    
+    This should list pods without errors.
+  </Step>
+</Steps>
+
+<Warning>
+  pgwd checks for `kubectl` at startup when using `-kube-postgres` and exits with a clear error if it's not found.
+</Warning>
+
+## Next steps
+
+<Card title="Quick start" icon="rocket" href="/quickstart">
+  Run your first connection check in under 5 minutes
+</Card>

@@ -1,80 +1,362 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick start
+description: Get your first pgwd check running in under 5 minutes
 ---
 
-## Get started in three steps
+This guide walks you through running your first pgwd check, from a simple dry-run to a fully configured alerting setup.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+- pgwd installed ([Installation guide](/installation))
+- PostgreSQL database URL with credentials
+- (Optional) Slack webhook or Loki endpoint for alerts
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+## Step 1: Install pgwd
+
+If you haven't already, install pgwd:
+
+<CodeGroup>
+  ```bash Go
+  go install github.com/hrodrig/pgwd@latest
+  ```
+  
+  ```bash Homebrew
+  brew install hrodrig/pgwd/pgwd
+  ```
+  
+  ```bash Docker
+  docker pull ghcr.io/hrodrig/pgwd:latest
+  ```
+</CodeGroup>
+
+Verify the installation:
+
+```bash
+pgwd --version
+```
+
+## Step 2: Set your database URL
+
+Export your PostgreSQL connection URL as an environment variable:
+
+```bash
+export PGWD_DB_URL="postgres://user:password@localhost:5432/mydb"
+```
+
+<Note>
+  The database user needs read access to `pg_stat_activity` and `pg_settings`. Most standard roles have this by default.
+</Note>
+
+### URL format examples
+
+<CodeGroup>
+  ```bash Local Postgres
+  postgres://postgres:secret@localhost:5432/postgres
+  ```
+  
+  ```bash Remote with SSL
+  postgres://user:pass@prod-host:5432/mydb?sslmode=require
+  ```
+  
+  ```bash Disable SSL (development)
+  postgres://postgres:secret@127.0.0.1:5433/postgres?sslmode=disable
+  ```
+  
+  ```bash Kubernetes (after port-forward)
+  postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/mydb
+  ```
+</CodeGroup>
+
+## Step 3: Run a dry-run check
+
+A dry-run prints connection stats without sending any alerts:
+
+```bash
+pgwd -dry-run
+```
+
+You'll see output like:
+
+```
+total=42 active=3 idle=39 max_connections=100
+```
+
+This confirms pgwd can connect and read your database stats.
+
+<Tip>
+  Use `-dry-run` to test connectivity and see current connection counts before configuring thresholds.
+</Tip>
+
+## Step 4: Configure a notifier
+
+Choose **Slack** or **Loki** (or both) for alerts.
+
+<Tabs>
+  <Tab title="Slack">
+    ### Create a Slack webhook
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    1. Go to [api.slack.com/messaging/webhooks](https://api.slack.com/messaging/webhooks)
+    2. Create an Incoming Webhook for your workspace
+    3. Copy the webhook URL
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    ### Configure pgwd
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    ```bash
+    export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXX"
+    ```
+    
+    ### Test notification
+    
+    Send a test message to verify delivery:
+    
+    ```bash
+    pgwd -force-notification
+    ```
+    
+    You should receive a test message in your Slack channel.
+  </Tab>
+  
+  <Tab title="Loki">
+    ### Configure Loki endpoint
+    
+    Set your Loki push API URL:
+    
+    ```bash
+    export PGWD_LOKI_URL="http://localhost:3100/loki/api/v1/push"
+    ```
+    
+    ### Add labels (optional)
+    
+    Add custom labels for filtering in Grafana:
+    
+    ```bash
+    export PGWD_LOKI_LABELS="app=pgwd,env=prod,db=myapp"
+    ```
+    
+    ### Test notification
+    
+    Send a test log entry:
+    
+    ```bash
+    pgwd -force-notification
+    ```
+    
+    Query in Grafana:
+    ```logql
+    {app="pgwd", env="prod"}
+    ```
+  </Tab>
+  
+  <Tab title="Both">
+    ### Configure both notifiers
+    
+    pgwd can send alerts to Slack and Loki simultaneously:
+    
+    ```bash
+    export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+    export PGWD_LOKI_URL="http://localhost:3100/loki/api/v1/push"
+    export PGWD_LOKI_LABELS="app=pgwd,env=prod"
+    ```
+    
+    ### Test both
+    
+    ```bash
+    pgwd -force-notification
+    ```
+    
+    Check both Slack and Loki for the test message.
+  </Tab>
+</Tabs>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+## Step 5: Run with thresholds
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+Now run a real check with thresholds.
 
-### Step 3: Go live
+### Option A: 3-tier percentage mode (default)
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+By default, pgwd uses 75/85/95% of `max_connections` as attention/alert/danger levels:
+
+```bash
+pgwd
+```
+
+This is equivalent to:
+
+```bash
+pgwd -threshold-levels 75,85,95
+```
+
+**How it works:**
+- At 75% → **Attention** (yellow in Slack)
+- At 85% → **Alert** (orange in Slack)
+- At 95% → **Danger** (red in Slack)
+
+Only the highest breached level triggers an alert.
+
+### Option B: Explicit thresholds
+
+Set specific connection counts:
+
+```bash
+pgwd -threshold-total 80
+```
+
+This alerts when total connections reach 80 or more.
+
+### Option C: Multiple thresholds
+
+Monitor multiple metrics in one run:
+
+```bash
+pgwd -threshold-total 90 -threshold-idle 60 -threshold-active 50
+```
+
+Each exceeded threshold generates a separate alert.
+
+## Real-world examples
+
+### One-shot: Alert on total connections
+
+```bash
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" \
+     -threshold-total 80 \
+     -slack-webhook "https://hooks.slack.com/services/..."
+```
+
+### Daemon: Check every 60 seconds
+
+```bash
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" \
+     -threshold-total 80 \
+     -interval 60 \
+     -slack-webhook "https://hooks.slack.com/services/..."
+```
+
+Press Ctrl+C or send SIGTERM to stop gracefully.
+
+### Detect stale connections (connection leaks)
+
+Alert when any connection stays open longer than 10 minutes:
+
+```bash
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" \
+     -stale-age 600 \
+     -threshold-stale 1 \
+     -slack-webhook "https://hooks.slack.com/services/..."
+```
+
+### Custom 3-tier levels
+
+Use 70/85/90% instead of the default 75/85/95%:
+
+```bash
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" \
+     -threshold-levels 70,85,90 \
+     -slack-webhook "https://hooks.slack.com/services/..."
+```
+
+### Kubernetes: Connect via port-forward
+
+Connect to Postgres in Kubernetes without manual port-forwarding:
+
+```bash
+pgwd -kube-postgres default/svc/postgres \
+     -db-url "postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/mydb" \
+     -slack-webhook "https://hooks.slack.com/services/..."
+```
+
+pgwd runs `kubectl port-forward` automatically and discovers the password from the pod's environment (`POSTGRES_PASSWORD` by default).
+
+<Note>
+  Requires `kubectl` in your `PATH`. pgwd checks at startup and exits with a clear error if `kubectl` is missing.
+</Note>
+
+## Troubleshooting
+
+### "missing database URL"
+
+Set `PGWD_DB_URL` or use `-db-url`:
+
+```bash
+export PGWD_DB_URL="postgres://user:pass@localhost:5432/mydb"
+```
+
+### "no notifier configured"
+
+Set at least one notifier or use `-dry-run`:
+
+```bash
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+```
+
+### "postgres connect: connection refused"
+
+Check that:
+- Postgres is running and reachable
+- Host, port, and database name are correct
+- Credentials are valid
+- Network/firewall allows connections
+
+For local development with Docker:
+
+```bash
+# Start Postgres on host port 5433 to avoid conflicts
+docker run -d --name pgwd-pg \
+  -e POSTGRES_PASSWORD=secret \
+  -e POSTGRES_DB=postgres \
+  -p 5433:5432 \
+  postgres:16-alpine
+
+# Connect with sslmode=disable
+export PGWD_DB_URL="postgres://postgres:secret@127.0.0.1:5433/postgres?sslmode=disable"
+pgwd -dry-run
+```
+
+### No alerts received
+
+Run a test notification to validate delivery:
+
+```bash
+pgwd -force-notification
+```
+
+Check:
+- Webhook URL is correct
+- pgwd can reach Slack/Loki (network/firewall)
+- Slack channel or Loki labels are configured
+
+### "kubectl not found in PATH"
+
+Install kubectl and ensure it's in your PATH:
+
+```bash
+which kubectl
+```
+
+When running from cron, set PATH explicitly:
+
+```bash
+# In crontab
+PATH=/usr/local/bin:/usr/bin:/bin
+*/5 * * * * /usr/local/bin/pgwd ...
+```
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Configuration" icon="gear" href="/configuration/overview">
+    Learn about all configuration options and environment variables
+  </Card>
+  
+  <Card title="Deployment" icon="server" href="/deployment/docker">
+    Deploy pgwd with Docker, systemd, or cron
+  </Card>
+  
+  <Card title="Stale connections" icon="clock" href="/guides/stale-connections">
+    Detect and alert on connection leaks
+  </Card>
+  
+  <Card title="Troubleshooting" icon="wrench" href="/reference/troubleshooting">
+    Common issues and solutions
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

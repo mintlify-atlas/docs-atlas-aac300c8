@@ -1,0 +1,333 @@
+---
+title: Threshold Configuration
+description: Configure connection thresholds and multi-tier alert levels
+---
+
+pgwd monitors PostgreSQL connections and sends alerts when configured thresholds are exceeded. You can use **three-tier level mode** for automatic percentage-based thresholds, or set **explicit thresholds** for fine-grained control.
+
+## Threshold Types
+
+pgwd supports four types of connection thresholds:
+
+<CardGroup cols={2}>
+  <Card title="Total Connections" icon="database">
+    Monitor overall connection usage relative to `max_connections`. Use this to prevent hitting the PostgreSQL connection limit.
+  </Card>
+  <Card title="Active Connections" icon="bolt">
+    Track connections currently executing queries. High active connections indicate load or long-running queries.
+  </Card>
+  <Card title="Idle Connections" icon="clock">
+    Monitor connections sitting idle in the pool. Useful for detecting connection pool sizing issues.
+  </Card>
+  <Card title="Stale Connections" icon="warning">
+    Detect connections that have been open too long without closing. Identifies connection leaks.
+  </Card>
+</CardGroup>
+
+### When to Use Each Threshold
+
+| Threshold | Use Case | Example |
+|-----------|----------|--------|
+| **total** | Overall connection capacity | Alert when 80% of `max_connections` is used |
+| **active** | Query load and performance | Alert when 50 queries are running simultaneously |
+| **idle** | Connection pool efficiency | Alert when 40 connections are idle |
+| **stale** | Connection leak detection | Alert when ≥1 connection open >10 minutes |
+
+## Three-Tier Level Mode
+
+**Level mode** is the default configuration. When both `threshold-total` and `threshold-active` are unset (or 0), pgwd automatically monitors connections at three percentage-based levels of `max_connections`.
+
+### Default Levels
+
+The default threshold levels are **75%, 85%, and 95%**:
+
+- **75% - Attention (Yellow)**: Early warning that connections are growing
+- **85% - Alert (Orange)**: Connections approaching capacity
+- **95% - Danger (Red)**: Critical, near max_connections
+
+<Note>
+  Only the **highest breached level** triggers an alert. If both total and active exceed 85%, only one alert is sent for the highest severity.
+</Note>
+
+### Configuration
+
+<ParamField path="threshold-levels" type="string" default="75,85,95">
+  Comma-separated percentages for three-tier alerts (attention/alert/danger). Each value must be 1-100 and in ascending order.
+  
+  **Environment variable**: `PGWD_THRESHOLD_LEVELS`
+</ParamField>
+
+<CodeGroup>
+```bash Default Levels (75/85/95)
+# Use default three-tier thresholds
+export PGWD_DB_URL="postgres://user:pass@localhost:5432/mydb"
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+
+pgwd
+# Monitors at 75%, 85%, 95% of max_connections
+```
+
+```bash Custom Levels
+# Custom three-tier levels: 70%, 85%, 90%
+pgwd -db-url "postgres://..." \
+     -threshold-levels 70,85,90 \
+     -slack-webhook "https://..."
+
+# Or via environment
+export PGWD_THRESHOLD_LEVELS="70,85,90"
+pgwd
+```
+</CodeGroup>
+
+### Level Mode Behavior
+
+Level mode compares both **total** and **active** connections against the percentage thresholds. The highest breached level determines the alert severity.
+
+**Example**: With `max_connections=100` and default levels `75,85,95`:
+
+- Total connections: 78 → 78% (level 1: attention)
+- Active connections: 88 → 88% (level 2: alert)
+- **Result**: One alert fires at **level 2 (alert)** for active connections
+
+```bash Example Alert Message
+Active connections 88 >= 85 (85% of max) — alert
+Connections: total=78, active=88, idle=12 (limit active=85)
+```
+
+## Explicit Thresholds
+
+For fine-grained control, set explicit threshold values. When you set `threshold-total` or `threshold-active`, level mode is disabled for that threshold.
+
+<Note>
+  **Deprecation Notice**: `-threshold-total` and `-threshold-active` are deprecated and will be removed in v1.0.0. Use `-threshold-levels` for percentage-based monitoring.
+</Note>
+
+### Total Connections
+
+<ParamField path="threshold-total" type="integer" default="0">
+  Alert when total connections ≥ N. When set, disables level mode for total connections.
+  
+  **Environment variable**: `PGWD_THRESHOLD_TOTAL`
+  
+  **Status**: Deprecated in favor of `-threshold-levels`
+</ParamField>
+
+```bash
+# Alert when total connections reach 80
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" \
+     -threshold-total 80 \
+     -slack-webhook "https://hooks.slack.com/services/..."
+```
+
+### Active Connections
+
+<ParamField path="threshold-active" type="integer" default="0">
+  Alert when active connections ≥ N. When set, disables level mode for active connections.
+  
+  **Environment variable**: `PGWD_THRESHOLD_ACTIVE`
+  
+  **Status**: Deprecated in favor of `-threshold-levels`
+</ParamField>
+
+```bash
+# Alert when 50 queries are running
+pgwd -db-url "postgres://..." \
+     -threshold-active 50 \
+     -loki-url "http://localhost:3100/loki/api/v1/push"
+```
+
+### Idle Connections
+
+<ParamField path="threshold-idle" type="integer" default="0">
+  Alert when idle connections ≥ N. Independent of level mode.
+  
+  **Environment variable**: `PGWD_THRESHOLD_IDLE`
+</ParamField>
+
+```bash
+# Monitor idle connections in daemon mode
+pgwd -db-url "postgres://..." \
+     -threshold-idle 40 \
+     -interval 60 \
+     -slack-webhook "https://..."
+```
+
+### Default Threshold Percentage
+
+When using explicit thresholds, if one of `threshold-total` or `threshold-active` is set and the other is 0, the unset threshold defaults to a percentage of `max_connections`.
+
+<ParamField path="default-threshold-percent" type="integer" default="80">
+  When one of total/active is explicitly set, set the other to this % of max_connections (1-100). Ignored in level mode.
+  
+  **Environment variable**: `PGWD_DEFAULT_THRESHOLD_PERCENT`
+</ParamField>
+
+```bash
+# Set total=80, active defaults to 80% of max_connections
+pgwd -db-url "postgres://..." \
+     -threshold-total 80 \
+     -default-threshold-percent 80 \
+     -slack-webhook "https://..."
+
+# With max_connections=100, active threshold becomes 80
+```
+
+## Stale Connection Detection
+
+Stale connections are connections that have been open longer than a specified age. This is crucial for detecting connection leaks or applications that fail to close connections properly.
+
+### Configuration
+
+<ParamField path="stale-age" type="integer" default="0">
+  Consider a connection stale if it has been open longer than N seconds. Based on `backend_start` in `pg_stat_activity`.
+  
+  **Environment variable**: `PGWD_STALE_AGE`
+  
+  **Required when using**: `threshold-stale`
+</ParamField>
+
+<ParamField path="threshold-stale" type="integer" default="0">
+  Alert when the count of stale connections (open > stale-age) ≥ N.
+  
+  **Environment variable**: `PGWD_THRESHOLD_STALE`
+  
+  **Requires**: `stale-age` must be set and > 0
+</ParamField>
+
+<CodeGroup>
+```bash Alert on Any Stale Connection
+# Alert when ≥1 connection has been open >10 minutes (600 seconds)
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" \
+     -stale-age 600 \
+     -threshold-stale 1 \
+     -slack-webhook "https://hooks.slack.com/services/..."
+```
+
+```bash Multiple Stale Threshold
+# Alert when ≥5 connections open >30 minutes
+export PGWD_STALE_AGE=1800
+export PGWD_THRESHOLD_STALE=5
+pgwd
+```
+</CodeGroup>
+
+<Warning>
+  When using `threshold-stale`, you **must** set `stale-age` to a value greater than 0. pgwd will exit with an error if `stale-age` is not configured.
+</Warning>
+
+## Multiple Thresholds
+
+You can combine multiple threshold types in a single pgwd run. Each exceeded threshold generates a separate alert.
+
+```bash
+# Monitor total, idle, and stale connections simultaneously
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" \
+     -threshold-total 90 \
+     -threshold-idle 60 \
+     -stale-age 600 \
+     -threshold-stale 1 \
+     -interval 120 \
+     -slack-webhook "https://hooks.slack.com/services/..." \
+     -loki-url "http://localhost:3100/loki/api/v1/push"
+
+# If total=92, idle=65, stale=2, sends three separate alerts
+```
+
+<Note>
+  In level mode, only the **highest breached level** fires (one alert for total or active). Other threshold types (idle, stale) always send individual alerts when exceeded.
+</Note>
+
+## Testing Thresholds
+
+### Test Max Connections Override
+
+Simulate alerts with a different `max_connections` value without affecting the real database configuration.
+
+<ParamField path="test-max-connections" type="integer" default="0">
+  Override server `max_connections` for threshold calculation and display (testing only). When set, threshold defaults and notifications use this value. Actual stats remain real.
+  
+  **Environment variable**: `PGWD_TEST_MAX_CONNECTIONS`
+  
+  **Note**: Notifications show "(test override)" to indicate simulated max_connections
+</ParamField>
+
+```bash
+# Test alerts with max_connections=20 (actual server may have 100)
+pgwd -db-url "postgres://..." \
+     -test-max-connections 20 \
+     -force-notification \
+     -slack-webhook "https://..."
+
+# Thresholds calculated as if max_connections=20
+# Alert shows: "(test override)" in message
+```
+
+## Real-World Examples
+
+### Example 1: Production Monitoring with Level Mode
+
+```bash
+# Monitor production with default three-tier levels
+export PGWD_DB_URL="postgres://pgwd:secret@prod-db:5432/production"
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/T00/B00/xxx"
+export PGWD_LOKI_URL="http://loki:3100/loki/api/v1/push"
+export PGWD_LOKI_LABELS="env=prod,app=pgwd,db=production"
+export PGWD_INTERVAL=60
+
+pgwd
+# Monitors at 75%, 85%, 95% every 60 seconds
+```
+
+### Example 2: Detect Connection Leaks
+
+```bash
+# Alert on connections open >10 minutes
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" \
+     -stale-age 600 \
+     -threshold-stale 1 \
+     -interval 300 \
+     -slack-webhook "https://hooks.slack.com/services/..."
+
+# Checks every 5 minutes, alerts if any connection is stale
+```
+
+### Example 3: Development Environment with Low Thresholds
+
+```bash
+# Sensitive monitoring for development
+export PGWD_DB_URL="postgres://localhost:5432/dev_db"
+export PGWD_THRESHOLD_LEVELS="60,75,85"
+export PGWD_THRESHOLD_IDLE=30
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/.../dev"
+
+pgwd -interval 120
+# Lower thresholds to catch issues early in dev
+```
+
+### Example 4: Comprehensive Multi-Threshold Monitoring
+
+```bash
+# Production: monitor all connection types
+export PGWD_DB_URL="postgres://pgwd:secret@prod:5432/app_db"
+export PGWD_THRESHOLD_TOTAL=90
+export PGWD_THRESHOLD_IDLE=60
+export PGWD_STALE_AGE=600
+export PGWD_THRESHOLD_STALE=2
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+export PGWD_INTERVAL=60
+
+pgwd
+# Monitors total, idle, and stale every minute
+# Each exceeded threshold sends a separate alert
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Notification Setup" icon="bell" href="/configuration/notifications">
+    Configure Slack and Loki for alerts
+  </Card>
+  <Card title="Monitoring Strategies" icon="chart-line" href="/guides/monitoring-strategies">
+    Best practices for threshold configuration
+  </Card>
+</CardGroup>

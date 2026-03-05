@@ -1,0 +1,483 @@
+---
+title: CLI Reference
+description: Complete command-line interface reference for pgwd
+---
+
+# CLI Reference
+
+Complete reference for all pgwd command-line flags. Every flag has a corresponding environment variable with the `PGWD_` prefix (see [Environment Variables](/reference/environment-variables)).
+
+## Usage
+
+```bash
+pgwd [flags]
+```
+
+## Version and Help
+
+<ParamField path="--version" type="flag">
+  Print version information and exit. Shows version, commit hash, and build date.
+  
+  Aliases: `-version`, `version`
+  
+  ```bash
+  pgwd --version
+  # Output: pgwd v0.3.6 (commit abc123, built 2026-03-05)
+  ```
+</ParamField>
+
+<ParamField path="-h" type="flag">
+  Print help message showing all flags and their environment variable equivalents, then exit.
+  
+  ```bash
+  pgwd -h
+  ```
+</ParamField>
+
+## Database Connection
+
+<ParamField path="-db-url" type="string" required>
+  PostgreSQL connection URL.
+  
+  **Environment variable:** `PGWD_DB_URL`
+  
+  **Format:** `postgres://user:password@host:port/database[?options]`
+  
+  When using `-kube-postgres`, use `localhost` as host and the same port as `-kube-local-port` (default 5432).
+  
+  For Kubernetes password discovery, use the literal string `DISCOVER_MY_PASSWORD` as the password.
+  
+  ```bash
+  # Standard connection
+  pgwd -db-url "postgres://user:pass@localhost:5432/mydb"
+  
+  # Kubernetes with password discovery
+  pgwd -db-url "postgres://user:DISCOVER_MY_PASSWORD@localhost:5432/mydb" \
+       -kube-postgres default/svc/postgres
+  ```
+</ParamField>
+
+## Kubernetes Integration
+
+<ParamField path="-kube-postgres" type="string">
+  Connect to Postgres via `kubectl port-forward`. Requires `kubectl` in PATH.
+  
+  **Environment variable:** `PGWD_KUBE_POSTGRES`
+  
+  **Format:** `namespace/type/name` where type is `svc` or `pod`
+  
+  **Default:** (empty - direct connection)
+  
+  ```bash
+  # Connect via service
+  pgwd -kube-postgres default/svc/postgres -db-url "postgres://..."
+  
+  # Connect via pod
+  pgwd -kube-postgres default/pod/postgres-0 -db-url "postgres://..."
+  ```
+</ParamField>
+
+<ParamField path="-kube-context" type="string">
+  Kubectl context to use when connecting via `-kube-postgres`.
+  
+  **Environment variable:** `PGWD_KUBE_CONTEXT`
+  
+  **Default:** (empty - uses current context)
+  
+  Use when you have multiple clusters in your kubeconfig and need to target a specific one.
+  
+  ```bash
+  pgwd -kube-postgres default/svc/postgres \
+       -kube-context production \
+       -db-url "postgres://..."
+  ```
+</ParamField>
+
+<ParamField path="-kube-local-port" type="integer">
+  Local port for kubectl port-forward.
+  
+  **Environment variable:** `PGWD_KUBE_LOCAL_PORT`
+  
+  **Default:** `5432`
+  
+  Use different ports when monitoring multiple Postgres instances simultaneously.
+  
+  ```bash
+  # Monitor two services with different local ports
+  pgwd -kube-postgres ns/svc/postgres-a -kube-local-port 15432 -db-url "postgres://...@localhost:15432/db_a"
+  pgwd -kube-postgres ns/svc/postgres-b -kube-local-port 15433 -db-url "postgres://...@localhost:15433/db_b"
+  ```
+</ParamField>
+
+<ParamField path="-kube-password-var" type="string">
+  Pod environment variable name for password discovery.
+  
+  **Environment variable:** `PGWD_KUBE_PASSWORD_VAR`
+  
+  **Default:** `POSTGRES_PASSWORD`
+  
+  Used when the database URL contains `DISCOVER_MY_PASSWORD` as the password. pgwd reads the password from the specified pod environment variable.
+  
+  ```bash
+  # Use custom password env var
+  pgwd -kube-postgres default/pod/postgres-0 \
+       -kube-password-var PGPASSWORD \
+       -db-url "postgres://user:DISCOVER_MY_PASSWORD@localhost:5432/db"
+  ```
+</ParamField>
+
+<ParamField path="-kube-password-container" type="string">
+  Container name in pod for password discovery.
+  
+  **Environment variable:** `PGWD_KUBE_PASSWORD_CONTAINER`
+  
+  **Default:** (empty - uses default container)
+  
+  Specify when the Postgres container is not the default/first container in the pod.
+  
+  ```bash
+  pgwd -kube-postgres default/pod/app-0 \
+       -kube-password-container postgres \
+       -db-url "postgres://user:DISCOVER_MY_PASSWORD@localhost:5432/db"
+  ```
+</ParamField>
+
+<ParamField path="-validate-k8s-access" type="boolean">
+  Validate kubectl connectivity, list pods in the target namespace, then exit.
+  
+  **Environment variable:** `PGWD_VALIDATE_K8S_ACCESS`
+  
+  **Default:** `false`
+  
+  Use with `-kube-context` to verify access to a specific cluster. Does not require database URL or notifier configuration.
+  
+  ```bash
+  pgwd -validate-k8s-access -kube-context production
+  ```
+</ParamField>
+
+## Thresholds
+
+### Connection Count Thresholds
+
+<ParamField path="-threshold-total" type="integer">
+  Alert when total connections ≥ N.
+  
+  **Environment variable:** `PGWD_THRESHOLD_TOTAL`
+  
+  **Default:** `0` (disabled)
+  
+  <Warning>
+    **Deprecated:** This flag is deprecated and will be removed in v1.0.0. Use `-threshold-levels` instead.
+  </Warning>
+  
+  When both `-threshold-total` and `-threshold-active` are 0, pgwd uses 3-tier level mode (see `-threshold-levels`).
+  
+  ```bash
+  pgwd -db-url "postgres://..." -threshold-total 80 -slack-webhook "https://..."
+  ```
+</ParamField>
+
+<ParamField path="-threshold-active" type="integer">
+  Alert when active connections ≥ N.
+  
+  **Environment variable:** `PGWD_THRESHOLD_ACTIVE`
+  
+  **Default:** `0` (disabled)
+  
+  <Warning>
+    **Deprecated:** This flag is deprecated and will be removed in v1.0.0. Use `-threshold-levels` instead.
+  </Warning>
+  
+  Active connections are connections currently executing a query.
+  
+  ```bash
+  pgwd -db-url "postgres://..." -threshold-active 50 -slack-webhook "https://..."
+  ```
+</ParamField>
+
+<ParamField path="-threshold-idle" type="integer">
+  Alert when idle connections ≥ N.
+  
+  **Environment variable:** `PGWD_THRESHOLD_IDLE`
+  
+  **Default:** `0` (disabled)
+  
+  Idle connections are connections not currently executing a query.
+  
+  ```bash
+  pgwd -db-url "postgres://..." -threshold-idle 40 -slack-webhook "https://..."
+  ```
+</ParamField>
+
+### Stale Connection Detection
+
+<ParamField path="-stale-age" type="integer">
+  Consider connections stale if open longer than N seconds.
+  
+  **Environment variable:** `PGWD_STALE_AGE`
+  
+  **Default:** `0` (disabled)
+  
+  Must be greater than 0 when using `-threshold-stale`. Stale connections are identified based on `backend_start` in `pg_stat_activity`.
+  
+  ```bash
+  # Alert on connections open longer than 10 minutes
+  pgwd -db-url "postgres://..." \
+       -stale-age 600 \
+       -threshold-stale 1 \
+       -slack-webhook "https://..."
+  ```
+</ParamField>
+
+<ParamField path="-threshold-stale" type="integer">
+  Alert when stale connections (open > stale-age) ≥ N.
+  
+  **Environment variable:** `PGWD_THRESHOLD_STALE`
+  
+  **Default:** `0` (disabled)
+  
+  Requires `-stale-age` to be set and greater than 0.
+  
+  ```bash
+  pgwd -db-url "postgres://..." \
+       -stale-age 600 \
+       -threshold-stale 1 \
+       -slack-webhook "https://..."
+  ```
+</ParamField>
+
+### Threshold Configuration
+
+<ParamField path="-default-threshold-percent" type="integer">
+  When one of total/active is 0, set it to this percentage of max_connections.
+  
+  **Environment variable:** `PGWD_DEFAULT_THRESHOLD_PERCENT`
+  
+  **Default:** `80`
+  
+  **Range:** 1-100
+  
+  Ignored when using `-threshold-levels` mode (when both total and active are 0).
+  
+  ```bash
+  # Set total to 90% of max_connections
+  pgwd -db-url "postgres://..." \
+       -threshold-active 50 \
+       -default-threshold-percent 90 \
+       -slack-webhook "https://..."
+  ```
+</ParamField>
+
+<ParamField path="-threshold-levels" type="string">
+  Three-tier alert levels as comma-separated percentages of max_connections.
+  
+  **Environment variable:** `PGWD_THRESHOLD_LEVELS`
+  
+  **Default:** `75,85,95`
+  
+  **Format:** `<attention>,<alert>,<danger>` (e.g., `70,85,90`)
+  
+  Used when both `-threshold-total` and `-threshold-active` are 0. Only the highest breached level fires. Each percentage must be 1-100 and in ascending order.
+  
+  **Levels:**
+  - **attention** (1st): Yellow/warning level
+  - **alert** (2nd): Orange/elevated level  
+  - **danger** (3rd): Red/critical level
+  
+  ```bash
+  # Use default 3-tier levels (75%, 85%, 95%)
+  pgwd -db-url "postgres://..." -slack-webhook "https://..."
+  
+  # Custom levels
+  pgwd -db-url "postgres://..." \
+       -threshold-levels 70,85,90 \
+       -slack-webhook "https://..."
+  ```
+</ParamField>
+
+<ParamField path="-test-max-connections" type="integer">
+  Override server max_connections for threshold defaults and display (testing only).
+  
+  **Environment variable:** `PGWD_TEST_MAX_CONNECTIONS`
+  
+  **Default:** `0` (use server value)
+  
+  When set, pgwd uses this value instead of the server's `max_connections` for calculating defaults and in notifications. Actual connection stats remain real. Notifications show "(test override)" so you can simulate alerts without a real low max_connections.
+  
+  ```bash
+  # Test alerts with simulated low max_connections
+  pgwd -db-url "postgres://..." \
+       -test-max-connections 20 \
+       -force-notification \
+       -slack-webhook "https://..."
+  ```
+</ParamField>
+
+## Notifications
+
+<ParamField path="-slack-webhook" type="string">
+  Slack Incoming Webhook URL for notifications.
+  
+  **Environment variable:** `PGWD_SLACK_WEBHOOK`
+  
+  **Default:** (empty - Slack disabled)
+  
+  Create an [Incoming Webhook](https://api.slack.com/messaging/webhooks) in your Slack workspace.
+  
+  ```bash
+  pgwd -db-url "postgres://..." \
+       -threshold-total 80 \
+       -slack-webhook "https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXX"
+  ```
+</ParamField>
+
+<ParamField path="-loki-url" type="string">
+  Loki push API URL for log-based notifications.
+  
+  **Environment variable:** `PGWD_LOKI_URL`
+  
+  **Default:** (empty - Loki disabled)
+  
+  **Format:** `http://host:port/loki/api/v1/push`
+  
+  ```bash
+  pgwd -db-url "postgres://..." \
+       -threshold-total 80 \
+       -loki-url "http://localhost:3100/loki/api/v1/push"
+  ```
+</ParamField>
+
+<ParamField path="-loki-labels" type="string">
+  Loki stream labels as comma-separated key=value pairs.
+  
+  **Environment variable:** `PGWD_LOKI_LABELS`
+  
+  **Default:** (empty - uses `app=pgwd` only)
+  
+  **Format:** `key1=value1,key2=value2`
+  
+  pgwd automatically adds `app=pgwd`, `threshold`, `level`, and `namespace` (when using `-kube-postgres`) labels.
+  
+  ```bash
+  pgwd -db-url "postgres://..." \
+       -threshold-total 80 \
+       -loki-url "http://localhost:3100/loki/api/v1/push" \
+       -loki-labels "env=prod,region=us-east-1"
+  ```
+</ParamField>
+
+## Notification Context
+
+<ParamField path="-cluster" type="string">
+  Cluster name for notifications (health-check style).
+  
+  **Environment variable:** `PGWD_CLUSTER`
+  
+  **Default:** (empty)
+  
+  When using `-kube-postgres`, automatically detected from kubeconfig if unset.
+  
+  ```bash
+  pgwd -db-url "postgres://..." \
+       -cluster production \
+       -slack-webhook "https://..."
+  ```
+</ParamField>
+
+<ParamField path="-client" type="string">
+  Client/service/pod name for notifications.
+  
+  **Environment variable:** `PGWD_CLIENT`
+  
+  **Default:** (empty)
+  
+  When using `-kube-postgres`, derived from the resource name (e.g., `svc/postgres`) if unset. Otherwise defaults to hostname.
+  
+  ```bash
+  pgwd -db-url "postgres://..." \
+       -client api-service \
+       -slack-webhook "https://..."
+  ```
+</ParamField>
+
+## Behavior
+
+<ParamField path="-interval" type="integer">
+  Run every N seconds in daemon mode.
+  
+  **Environment variable:** `PGWD_INTERVAL`
+  
+  **Default:** `0` (run once and exit)
+  
+  Set to a positive value to run continuously until interrupted (Ctrl+C or SIGTERM).
+  
+  ```bash
+  # One-shot (cron-style)
+  pgwd -db-url "postgres://..." -slack-webhook "https://..."
+  
+  # Daemon mode - check every 60 seconds
+  pgwd -db-url "postgres://..." \
+       -interval 60 \
+       -slack-webhook "https://..."
+  ```
+</ParamField>
+
+<ParamField path="-dry-run" type="boolean">
+  Only print connection stats to stdout, do not send notifications.
+  
+  **Environment variable:** `PGWD_DRY_RUN`
+  
+  **Default:** `false`
+  
+  Does not require notifier configuration. Use for testing and validation.
+  
+  ```bash
+  pgwd -db-url "postgres://..." -dry-run
+  # Output: total=42 active=3 idle=39 max_connections=100
+  ```
+</ParamField>
+
+<ParamField path="-force-notification" type="boolean">
+  Always send a test notification to validate delivery and format.
+  
+  **Environment variable:** `PGWD_FORCE_NOTIFICATION`
+  
+  **Default:** `false`
+  
+  Requires at least one notifier (`-slack-webhook` or `-loki-url`). Sends a test event regardless of thresholds.
+  
+  ```bash
+  # Validate Slack integration
+  pgwd -db-url "postgres://..." \
+       -slack-webhook "https://..." \
+       -force-notification
+  ```
+</ParamField>
+
+<ParamField path="-notify-on-connect-failure" type="boolean">
+  Send alert when Postgres connection fails (infrastructure alert).
+  
+  **Environment variable:** `PGWD_NOTIFY_ON_CONNECT_FAILURE`
+  
+  **Default:** `false`
+  
+  <Info>
+    **Note:** Connection failures are now **always** notified when a notifier is configured. This flag is kept for backward compatibility.
+  </Info>
+  
+  ```bash
+  pgwd -db-url "postgres://..." \
+       -notify-on-connect-failure \
+       -slack-webhook "https://..."
+  ```
+</ParamField>
+
+## Exit Codes
+
+- **0**: Success - all checks completed without fatal errors
+- **Non-zero**: Fatal error occurred (e.g., missing required configuration, database connection failure, validation error)
+
+## Examples
+
+See [Examples](/reference/examples) for complete working configurations.

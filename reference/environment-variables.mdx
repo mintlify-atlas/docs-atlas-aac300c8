@@ -1,0 +1,462 @@
+---
+title: Environment Variables
+description: Environment variable reference for pgwd configuration
+---
+
+# Environment Variables
+
+All pgwd configuration options can be set via environment variables with the `PGWD_` prefix. CLI flags override environment variables.
+
+## Naming Convention
+
+- **Prefix:** All variables start with `PGWD_`
+- **Case:** Uppercase with underscores (e.g., `PGWD_DB_URL`)
+- **Conversion:** CLI flag names are uppercased and hyphens become underscores
+  - `-db-url` → `PGWD_DB_URL`
+  - `-threshold-total` → `PGWD_THRESHOLD_TOTAL`
+  - `-kube-postgres` → `PGWD_KUBE_POSTGRES`
+
+## Override Behavior
+
+Environment variables provide defaults. CLI flags override them:
+
+```bash
+export PGWD_THRESHOLD_TOTAL=80
+
+# Uses environment variable (80)
+pgwd -db-url "postgres://..."
+
+# CLI flag overrides (uses 100)
+pgwd -db-url "postgres://..." -threshold-total 100
+```
+
+## Database Connection
+
+<ParamField path="PGWD_DB_URL" type="string" required>
+  PostgreSQL connection URL.
+  
+  **CLI flag:** `-db-url`
+  
+  **Format:** `postgres://user:password@host:port/database[?options]`
+  
+  ```bash
+  export PGWD_DB_URL="postgres://user:pass@localhost:5432/mydb"
+  ```
+</ParamField>
+
+## Kubernetes Integration
+
+<ParamField path="PGWD_KUBE_POSTGRES" type="string">
+  Connect via kubectl port-forward.
+  
+  **CLI flag:** `-kube-postgres`
+  
+  **Default:** (empty)
+  
+  **Format:** `namespace/type/name`
+  
+  ```bash
+  export PGWD_KUBE_POSTGRES="default/svc/postgres"
+  ```
+</ParamField>
+
+<ParamField path="PGWD_KUBE_CONTEXT" type="string">
+  Kubectl context to use.
+  
+  **CLI flag:** `-kube-context`
+  
+  **Default:** (empty - current context)
+  
+  ```bash
+  export PGWD_KUBE_CONTEXT="production"
+  ```
+</ParamField>
+
+<ParamField path="PGWD_KUBE_LOCAL_PORT" type="integer">
+  Local port for kubectl port-forward.
+  
+  **CLI flag:** `-kube-local-port`
+  
+  **Default:** `5432`
+  
+  ```bash
+  export PGWD_KUBE_LOCAL_PORT=15432
+  ```
+</ParamField>
+
+<ParamField path="PGWD_KUBE_PASSWORD_VAR" type="string">
+  Pod environment variable name for password discovery.
+  
+  **CLI flag:** `-kube-password-var`
+  
+  **Default:** `POSTGRES_PASSWORD`
+  
+  ```bash
+  export PGWD_KUBE_PASSWORD_VAR="PGPASSWORD"
+  ```
+</ParamField>
+
+<ParamField path="PGWD_KUBE_PASSWORD_CONTAINER" type="string">
+  Container name in pod for password discovery.
+  
+  **CLI flag:** `-kube-password-container`
+  
+  **Default:** (empty - default container)
+  
+  ```bash
+  export PGWD_KUBE_PASSWORD_CONTAINER="postgres"
+  ```
+</ParamField>
+
+<ParamField path="PGWD_VALIDATE_K8S_ACCESS" type="boolean">
+  Validate kubectl connectivity and exit.
+  
+  **CLI flag:** `-validate-k8s-access`
+  
+  **Default:** `false`
+  
+  **Values:** `true`, `false`, `1`, `0`, `yes`, `no`
+  
+  ```bash
+  export PGWD_VALIDATE_K8S_ACCESS=true
+  ```
+</ParamField>
+
+## Thresholds
+
+### Connection Count Thresholds
+
+<ParamField path="PGWD_THRESHOLD_TOTAL" type="integer">
+  Alert when total connections ≥ N.
+  
+  **CLI flag:** `-threshold-total`
+  
+  **Default:** `0` (disabled)
+  
+  <Warning>
+    **Deprecated:** Will be removed in v1.0.0. Use `PGWD_THRESHOLD_LEVELS` instead.
+  </Warning>
+  
+  ```bash
+  export PGWD_THRESHOLD_TOTAL=80
+  ```
+</ParamField>
+
+<ParamField path="PGWD_THRESHOLD_ACTIVE" type="integer">
+  Alert when active connections ≥ N.
+  
+  **CLI flag:** `-threshold-active`
+  
+  **Default:** `0` (disabled)
+  
+  <Warning>
+    **Deprecated:** Will be removed in v1.0.0. Use `PGWD_THRESHOLD_LEVELS` instead.
+  </Warning>
+  
+  ```bash
+  export PGWD_THRESHOLD_ACTIVE=50
+  ```
+</ParamField>
+
+<ParamField path="PGWD_THRESHOLD_IDLE" type="integer">
+  Alert when idle connections ≥ N.
+  
+  **CLI flag:** `-threshold-idle`
+  
+  **Default:** `0` (disabled)
+  
+  ```bash
+  export PGWD_THRESHOLD_IDLE=40
+  ```
+</ParamField>
+
+### Stale Connection Detection
+
+<ParamField path="PGWD_STALE_AGE" type="integer">
+  Consider connections stale if open longer than N seconds.
+  
+  **CLI flag:** `-stale-age`
+  
+  **Default:** `0` (disabled)
+  
+  ```bash
+  export PGWD_STALE_AGE=600  # 10 minutes
+  ```
+</ParamField>
+
+<ParamField path="PGWD_THRESHOLD_STALE" type="integer">
+  Alert when stale connections ≥ N.
+  
+  **CLI flag:** `-threshold-stale`
+  
+  **Default:** `0` (disabled)
+  
+  Requires `PGWD_STALE_AGE` > 0.
+  
+  ```bash
+  export PGWD_THRESHOLD_STALE=1
+  ```
+</ParamField>
+
+### Threshold Configuration
+
+<ParamField path="PGWD_DEFAULT_THRESHOLD_PERCENT" type="integer">
+  Default threshold percentage of max_connections.
+  
+  **CLI flag:** `-default-threshold-percent`
+  
+  **Default:** `80`
+  
+  **Range:** 1-100
+  
+  ```bash
+  export PGWD_DEFAULT_THRESHOLD_PERCENT=90
+  ```
+</ParamField>
+
+<ParamField path="PGWD_THRESHOLD_LEVELS" type="string">
+  Three-tier alert levels as comma-separated percentages.
+  
+  **CLI flag:** `-threshold-levels`
+  
+  **Default:** `75,85,95`
+  
+  **Format:** `<attention>,<alert>,<danger>`
+  
+  ```bash
+  export PGWD_THRESHOLD_LEVELS="70,85,90"
+  ```
+</ParamField>
+
+<ParamField path="PGWD_TEST_MAX_CONNECTIONS" type="integer">
+  Override server max_connections (testing only).
+  
+  **CLI flag:** `-test-max-connections`
+  
+  **Default:** `0` (use server value)
+  
+  ```bash
+  export PGWD_TEST_MAX_CONNECTIONS=20
+  ```
+</ParamField>
+
+## Notifications
+
+<ParamField path="PGWD_SLACK_WEBHOOK" type="string">
+  Slack Incoming Webhook URL.
+  
+  **CLI flag:** `-slack-webhook`
+  
+  **Default:** (empty - disabled)
+  
+  ```bash
+  export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXX"
+  ```
+</ParamField>
+
+<ParamField path="PGWD_LOKI_URL" type="string">
+  Loki push API URL.
+  
+  **CLI flag:** `-loki-url`
+  
+  **Default:** (empty - disabled)
+  
+  ```bash
+  export PGWD_LOKI_URL="http://localhost:3100/loki/api/v1/push"
+  ```
+</ParamField>
+
+<ParamField path="PGWD_LOKI_LABELS" type="string">
+  Loki stream labels (comma-separated key=value).
+  
+  **CLI flag:** `-loki-labels`
+  
+  **Default:** (empty)
+  
+  ```bash
+  export PGWD_LOKI_LABELS="app=pgwd,env=prod,region=us-east-1"
+  ```
+</ParamField>
+
+## Notification Context
+
+<ParamField path="PGWD_CLUSTER" type="string">
+  Cluster name for notifications.
+  
+  **CLI flag:** `-cluster`
+  
+  **Default:** (empty - auto-detected with `-kube-postgres`)
+  
+  ```bash
+  export PGWD_CLUSTER="production"
+  ```
+</ParamField>
+
+<ParamField path="PGWD_CLIENT" type="string">
+  Client/service/pod name for notifications.
+  
+  **CLI flag:** `-client`
+  
+  **Default:** (empty - auto-detected or hostname)
+  
+  ```bash
+  export PGWD_CLIENT="api-service"
+  ```
+</ParamField>
+
+## Behavior
+
+<ParamField path="PGWD_INTERVAL" type="integer">
+  Run every N seconds (daemon mode).
+  
+  **CLI flag:** `-interval`
+  
+  **Default:** `0` (run once)
+  
+  ```bash
+  export PGWD_INTERVAL=60
+  ```
+</ParamField>
+
+<ParamField path="PGWD_DRY_RUN" type="boolean">
+  Only print stats, do not send notifications.
+  
+  **CLI flag:** `-dry-run`
+  
+  **Default:** `false`
+  
+  **Values:** `true`, `false`, `1`, `0`, `yes`, `no`
+  
+  ```bash
+  export PGWD_DRY_RUN=true
+  ```
+</ParamField>
+
+<ParamField path="PGWD_FORCE_NOTIFICATION" type="boolean">
+  Always send a test notification.
+  
+  **CLI flag:** `-force-notification`
+  
+  **Default:** `false`
+  
+  **Values:** `true`, `false`, `1`, `0`, `yes`, `no`
+  
+  ```bash
+  export PGWD_FORCE_NOTIFICATION=true
+  ```
+</ParamField>
+
+<ParamField path="PGWD_NOTIFY_ON_CONNECT_FAILURE" type="boolean">
+  Send alert on connection failure.
+  
+  **CLI flag:** `-notify-on-connect-failure`
+  
+  **Default:** `false`
+  
+  **Values:** `true`, `false`, `1`, `0`, `yes`, `no`
+  
+  <Info>
+    **Note:** Connection failures are now always notified when a notifier is configured. This variable is kept for backward compatibility.
+  </Info>
+  
+  ```bash
+  export PGWD_NOTIFY_ON_CONNECT_FAILURE=true
+  ```
+</ParamField>
+
+## Complete Configuration Example
+
+### Basic Configuration
+
+```bash
+# Database
+export PGWD_DB_URL="postgres://user:pass@localhost:5432/mydb"
+
+# Thresholds (use 3-tier levels by default)
+export PGWD_THRESHOLD_LEVELS="75,85,95"
+
+# Notifications
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+
+# Run as daemon
+export PGWD_INTERVAL=60
+
+# Execute
+pgwd
+```
+
+### Kubernetes Configuration
+
+```bash
+# Database with password discovery
+export PGWD_DB_URL="postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/mydb"
+
+# Kubernetes connection
+export PGWD_KUBE_POSTGRES="default/svc/postgres"
+export PGWD_KUBE_CONTEXT="production"
+export PGWD_KUBE_LOCAL_PORT=5432
+export PGWD_KUBE_PASSWORD_VAR="POSTGRES_PASSWORD"
+
+# Thresholds
+export PGWD_THRESHOLD_TOTAL=80
+export PGWD_THRESHOLD_IDLE=50
+export PGWD_STALE_AGE=600
+export PGWD_THRESHOLD_STALE=1
+
+# Notifications with Loki
+export PGWD_LOKI_URL="http://localhost:3100/loki/api/v1/push"
+export PGWD_LOKI_LABELS="app=pgwd,env=prod,cluster=k8s-prod"
+
+# Context
+export PGWD_CLUSTER="k8s-prod"
+export PGWD_CLIENT="svc/postgres"
+
+# Daemon mode
+export PGWD_INTERVAL=120
+
+# Execute
+pgwd
+```
+
+### Environment File for systemd
+
+Save as `/etc/pgwd.env` (set permissions: `chmod 600 /etc/pgwd.env`):
+
+```bash
+# /etc/pgwd.env
+PGWD_DB_URL=postgres://user:pass@localhost:5432/mydb
+PGWD_THRESHOLD_TOTAL=80
+PGWD_THRESHOLD_IDLE=50
+PGWD_SLACK_WEBHOOK=https://hooks.slack.com/services/...
+PGWD_LOKI_URL=http://localhost:3100/loki/api/v1/push
+PGWD_LOKI_LABELS=app=pgwd,env=prod
+PGWD_INTERVAL=60
+```
+
+Load in systemd unit:
+
+```ini
+[Service]
+EnvironmentFile=-/etc/pgwd.env
+ExecStart=/usr/local/bin/pgwd
+```
+
+## Boolean Values
+
+Boolean environment variables accept multiple formats (case-insensitive):
+
+- **True:** `true`, `1`, `yes`
+- **False:** `false`, `0`, `no`, or empty/unset
+
+```bash
+# All equivalent to true
+export PGWD_DRY_RUN=true
+export PGWD_DRY_RUN=1
+export PGWD_DRY_RUN=yes
+
+# All equivalent to false
+export PGWD_DRY_RUN=false
+export PGWD_DRY_RUN=0
+export PGWD_DRY_RUN=no
+unset PGWD_DRY_RUN
+```

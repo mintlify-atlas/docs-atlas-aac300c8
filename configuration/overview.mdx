@@ -1,0 +1,232 @@
+---
+title: Configuration Overview
+description: Understanding pgwd configuration with CLI flags and environment variables
+---
+
+pgwd provides flexible configuration through **CLI flags** and **environment variables**. This dual approach allows you to store secrets and defaults in environment variables while providing the ability to override settings at runtime with CLI flags.
+
+## Configuration Methods
+
+### Environment Variables
+
+All pgwd configuration options can be set using environment variables with the `PGWD_` prefix. Environment variables are ideal for:
+
+- Storing database credentials and webhook URLs securely
+- Setting default values for recurring operations
+- Container and systemd deployments
+- Separating configuration from code
+
+<CodeGroup>
+```bash Basic Example
+export PGWD_DB_URL="postgres://user:pass@localhost:5432/mydb"
+export PGWD_THRESHOLD_TOTAL=80
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+
+pgwd  # Runs with environment configuration
+```
+
+```bash Complete Configuration
+export PGWD_DB_URL="postgres://user:pass@localhost:5432/mydb"
+export PGWD_THRESHOLD_TOTAL=80
+export PGWD_THRESHOLD_IDLE=50
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+export PGWD_LOKI_URL="http://localhost:3100/loki/api/v1/push"
+export PGWD_INTERVAL=60
+
+pgwd  # Daemon mode with dual notifiers
+```
+</CodeGroup>
+
+### CLI Flags
+
+CLI flags override environment variables, making them perfect for:
+
+- One-off operations with different settings
+- Testing with temporary values
+- Overriding specific parameters in scripts
+- Quick testing without modifying environment
+
+```bash
+# Override database URL for production check
+pgwd -db-url "postgres://prod-host:5432/mydb" -interval 0
+
+# Test with lower threshold
+pgwd -threshold-total 5 -dry-run
+
+# Override interval for faster checks
+pgwd -interval 30
+```
+
+## Configuration Priority
+
+**CLI flags always override environment variables.** This allows you to set secure defaults in your environment while maintaining flexibility for runtime overrides.
+
+<CodeGroup>
+```bash Environment Defaults
+export PGWD_DB_URL="postgres://localhost:5432/mydb"
+export PGWD_THRESHOLD_TOTAL=80
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/..."
+```
+
+```bash CLI Override
+# Override threshold for this run only
+pgwd -threshold-total 90
+
+# Override DB and run once
+pgwd -db-url "postgres://prod-host:5432/mydb" -interval 0
+```
+</CodeGroup>
+
+## Configuration Validation
+
+pgwd validates configuration at startup and exits with a clear error message if settings are invalid. Common validation rules:
+
+<Steps>
+  <Step title="Database URL Required">
+    The `-db-url` flag or `PGWD_DB_URL` environment variable must be set.
+    
+    ```bash
+    # Error: missing database URL
+    pgwd
+    # Output: missing database URL: set PGWD_DB_URL or -db-url
+    ```
+  </Step>
+
+  <Step title="Notifier or Dry Run">
+    At least one notifier (`-slack-webhook` or `-loki-url`) must be configured unless using `-dry-run`.
+    
+    ```bash
+    # Valid: dry-run mode
+    pgwd -db-url "postgres://..." -dry-run
+    
+    # Error: no notifier
+    pgwd -db-url "postgres://..."
+    # Output: no notifier configured
+    ```
+  </Step>
+
+  <Step title="Stale Age Requirements">
+    When using `-threshold-stale`, you must also set `-stale-age` to a value greater than 0.
+    
+    ```bash
+    # Valid
+    pgwd -db-url "postgres://..." -stale-age 600 -threshold-stale 1
+    
+    # Error: missing stale-age
+    pgwd -db-url "postgres://..." -threshold-stale 1
+    # Output: when using threshold-stale, stale-age must be > 0
+    ```
+  </Step>
+
+  <Step title="Force Notification Requirements">
+    The `-force-notification` flag requires at least one configured notifier.
+    
+    ```bash
+    # Valid
+    pgwd -db-url "postgres://..." -slack-webhook "https://..." -force-notification
+    
+    # Error
+    pgwd -db-url "postgres://..." -force-notification
+    # Output: force-notification requires at least one notifier
+    ```
+  </Step>
+</Steps>
+
+## Common Configuration Patterns
+
+### Pattern 1: Zero Config (Default Thresholds)
+
+Set only the database URL and a notifier. pgwd automatically uses **3-tier level mode** with default thresholds at 75%, 85%, and 95% of `max_connections`.
+
+```bash
+export PGWD_DB_URL="postgres://user:pass@localhost:5432/mydb"
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+
+pgwd
+# Monitors at 75% (attention), 85% (alert), 95% (danger)
+```
+
+### Pattern 2: Environment Defaults with CLI Overrides
+
+Store secure credentials and common settings in environment variables, override specific values via CLI as needed.
+
+```bash
+# .env file or profile
+export PGWD_DB_URL="postgres://localhost:5432/mydb"
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+export PGWD_THRESHOLD_LEVELS="70,85,90"
+
+# Quick production check with different thresholds
+pgwd -db-url "postgres://prod:5432/mydb" -threshold-levels 80,90,95
+```
+
+### Pattern 3: Multiple Environments
+
+Use separate environment files or configuration per environment, override for cross-environment operations.
+
+<CodeGroup>
+```bash Development (.env.dev)
+PGWD_DB_URL=postgres://localhost:5432/dev_db
+PGWD_THRESHOLD_LEVELS=70,80,90
+PGWD_SLACK_WEBHOOK=https://hooks.slack.com/services/.../dev
+PGWD_LOKI_LABELS=env=dev,app=pgwd
+```
+
+```bash Production (.env.prod)
+PGWD_DB_URL=postgres://prod-host:5432/prod_db
+PGWD_THRESHOLD_LEVELS=75,85,95
+PGWD_SLACK_WEBHOOK=https://hooks.slack.com/services/.../prod
+PGWD_LOKI_LABELS=env=prod,app=pgwd
+PGWD_CLUSTER=production-us-east
+```
+</CodeGroup>
+
+```bash
+# Load environment-specific config
+source .env.dev && pgwd -interval 60
+
+# Or use direnv, dotenv, or container env vars
+```
+
+### Pattern 4: Testing and Validation
+
+Use `-dry-run` to see current connection stats without sending notifications. Use `-force-notification` to validate notifier configuration.
+
+```bash
+# Check current stats without alerting
+pgwd -db-url "postgres://..." -dry-run
+# Output: total=42 active=3 idle=39 max_connections=100
+
+# Validate Slack webhook
+pgwd -db-url "postgres://..." -slack-webhook "https://..." -force-notification
+
+# Test with simulated low max_connections
+pgwd -db-url "postgres://..." -test-max-connections 20 -force-notification
+```
+
+## Configuration Reference
+
+For a complete list of all configuration options:
+
+<CardGroup cols={2}>
+  <Card title="CLI Reference" icon="terminal" href="/reference/cli">
+    Complete list of all CLI flags with examples
+  </Card>
+  <Card title="Environment Variables" icon="gear" href="/reference/environment-variables">
+    All PGWD_* environment variables
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Threshold Configuration" icon="gauge" href="/configuration/thresholds">
+    Configure connection thresholds and alert levels
+  </Card>
+  <Card title="Notification Setup" icon="bell" href="/configuration/notifications">
+    Set up Slack and Loki notifications
+  </Card>
+  <Card title="Kubernetes Integration" icon="dharmachakra" href="/configuration/kubernetes">
+    Connect to Postgres in Kubernetes clusters
+  </Card>
+</CardGroup>

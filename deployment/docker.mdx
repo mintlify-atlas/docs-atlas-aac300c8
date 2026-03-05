@@ -1,0 +1,284 @@
+---
+title: Docker Deployment
+description: Run pgwd in Docker containers with published images or build from source
+---
+
+pgwd publishes multi-architecture Docker images to GitHub Container Registry with every release. You can use the published images or build your own from source.
+
+## Published Images
+
+Multi-arch images (linux/amd64, linux/arm64) are available at [ghcr.io/hrodrig/pgwd](https://github.com/hrodrig/pgwd/pkgs/container/pgwd).
+
+```bash
+# Pull specific version
+docker pull ghcr.io/hrodrig/pgwd:v0.3.6
+
+# Pull latest
+docker pull ghcr.io/hrodrig/pgwd:latest
+```
+
+## Image Details
+
+The pgwd Docker image is designed for security and minimal footprint:
+
+- **Base image:** Alpine 3.23
+- **User:** Runs as non-root user `pgwd` (not root)
+- **Runtime:** Only `ca-certificates` for HTTPS to Slack/Loki
+- **Binary location:** `/home/pgwd/pgwd`
+- **Build:** Multi-stage build with Go 1.26
+- **Labels:** OCI image labels for metadata
+
+<Note>
+The image intentionally removes `wget` and `nc` (BusyBox applets) from the base image to minimize attack surface.
+</Note>
+
+## Running One-Shot Checks
+
+Run pgwd once (ideal for testing or scheduled tasks):
+
+```bash
+# Check once and exit
+docker run --rm \
+  -e PGWD_DB_URL="postgres://user:pass@host.docker.internal:5432/mydb" \
+  -e PGWD_THRESHOLD_TOTAL=80 \
+  -e PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..." \
+  ghcr.io/hrodrig/pgwd:latest
+```
+
+<Steps>
+  <Step title="Verify image works">
+    Test the image before configuring:
+
+    ```bash
+    # Show help
+    docker run --rm ghcr.io/hrodrig/pgwd:latest -h
+
+    # Check version
+    docker run --rm ghcr.io/hrodrig/pgwd:latest --version
+
+    # Verify startup (should show "missing database URL")
+    docker run --rm ghcr.io/hrodrig/pgwd:latest
+    ```
+  </Step>
+
+  <Step title="Configure environment variables">
+    Pass all configuration via environment variables:
+
+    ```bash
+    docker run --rm \
+      -e PGWD_DB_URL="postgres://user:pass@host.docker.internal:5432/mydb" \
+      -e PGWD_THRESHOLD_TOTAL=80 \
+      -e PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..." \
+      ghcr.io/hrodrig/pgwd:latest
+    ```
+  </Step>
+
+  <Step title="Check output">
+    One-shot mode exits after checking once. Exit code 0 means success; non-zero indicates an error.
+  </Step>
+</Steps>
+
+## Running as Daemon
+
+Run pgwd continuously, checking every N seconds:
+
+```bash
+# Daemon mode: check every 60 seconds
+docker run --rm -d --name pgwd \
+  -e PGWD_DB_URL="postgres://user:pass@host.docker.internal:5432/mydb" \
+  -e PGWD_THRESHOLD_TOTAL=80 \
+  -e PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..." \
+  -e PGWD_INTERVAL=60 \
+  ghcr.io/hrodrig/pgwd:latest
+
+# View logs
+docker logs -f pgwd
+
+# Stop daemon
+docker stop pgwd
+```
+
+<Note>
+The `-d` flag runs the container in detached mode. Use `docker logs -f pgwd` to follow logs in real-time.
+</Note>
+
+## Environment Variable Configuration
+
+All pgwd options can be configured via environment variables with the `PGWD_` prefix:
+
+```bash
+docker run --rm \
+  -e PGWD_DB_URL="postgres://user:pass@host.docker.internal:5432/mydb" \
+  -e PGWD_THRESHOLD_TOTAL=80 \
+  -e PGWD_THRESHOLD_IDLE=50 \
+  -e PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..." \
+  -e PGWD_LOKI_URL="http://loki:3100/loki/api/v1/push" \
+  -e PGWD_LOKI_LABELS="app=pgwd,env=prod,db=myapp" \
+  -e PGWD_INTERVAL=60 \
+  ghcr.io/hrodrig/pgwd:latest
+```
+
+### Using Environment Files
+
+For better secrets management, use Docker's `--env-file` option:
+
+```bash
+# Create env file
+cat > pgwd.env << 'EOF'
+PGWD_DB_URL=postgres://user:pass@host.docker.internal:5432/mydb
+PGWD_THRESHOLD_TOTAL=80
+PGWD_THRESHOLD_IDLE=50
+PGWD_SLACK_WEBHOOK=https://hooks.slack.com/services/...
+PGWD_INTERVAL=60
+EOF
+
+# Run with env file
+docker run --rm -d --name pgwd \
+  --env-file pgwd.env \
+  ghcr.io/hrodrig/pgwd:latest
+```
+
+<Warning>
+Protect your environment file with appropriate permissions:
+```bash
+chmod 600 pgwd.env
+```
+</Warning>
+
+## Network Considerations
+
+When connecting to PostgreSQL from Docker:
+
+### Connecting to Host Postgres
+
+Use `host.docker.internal` to reach PostgreSQL running on your host machine:
+
+```bash
+-e PGWD_DB_URL="postgres://user:pass@host.docker.internal:5432/mydb"
+```
+
+### Connecting to Postgres in Docker Network
+
+If Postgres runs in a Docker network, add pgwd to the same network:
+
+```bash
+# Create network (if not exists)
+docker network create myapp-network
+
+# Run Postgres in network
+docker run -d --name postgres --network myapp-network postgres:16-alpine
+
+# Run pgwd in same network
+docker run --rm -d --name pgwd \
+  --network myapp-network \
+  -e PGWD_DB_URL="postgres://user:pass@postgres:5432/mydb" \
+  -e PGWD_THRESHOLD_TOTAL=80 \
+  -e PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..." \
+  -e PGWD_INTERVAL=60 \
+  ghcr.io/hrodrig/pgwd:latest
+```
+
+<Note>
+When using Docker networks, reference the Postgres container by its container name (e.g., `postgres` instead of `localhost`).
+</Note>
+
+## Building from Source
+
+Build your own image with version information:
+
+<Steps>
+  <Step title="Clone repository">
+    ```bash
+    git clone https://github.com/hrodrig/pgwd.git
+    cd pgwd
+    ```
+  </Step>
+
+  <Step title="Build with make">
+    Use `make docker-build` to inject version information:
+
+    ```bash
+    make docker-build
+    ```
+
+    This runs `docker build` with build args for `VERSION`, `COMMIT`, and `BUILDDATE` from the `VERSION` file and git.
+  </Step>
+
+  <Step title="Verify build">
+    ```bash
+    # Check version (should show real version, not "dev")
+    docker run --rm pgwd --version
+
+    # Expected output:
+    # pgwd v0.3.6 (commit abc123, built 2024-01-01T00:00:00Z)
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+If you use `docker build -t pgwd .` directly (without make), the binary will report `dev` / `unknown` for version and commit information.
+</Warning>
+
+## Development Testing
+
+Run a test PostgreSQL container to validate pgwd:
+
+```bash
+# Start test Postgres (port 5433 on host)
+docker stop pgwd-pg 2>/dev/null; docker rm pgwd-pg 2>/dev/null
+docker run -d --name pgwd-pg \
+  -e POSTGRES_PASSWORD=secret \
+  -e POSTGRES_DB=postgres \
+  -p 5433:5432 \
+  postgres:16-alpine
+
+# Test pgwd in dry-run mode
+docker run --rm \
+  -e PGWD_DB_URL="postgres://postgres:secret@host.docker.internal:5433/postgres?sslmode=disable" \
+  -e PGWD_DRY_RUN=true \
+  ghcr.io/hrodrig/pgwd:latest
+
+# Clean up
+docker stop pgwd-pg && docker rm pgwd-pg
+```
+
+## Troubleshooting
+
+### Cannot connect to Postgres on host
+
+**Problem:** Connection refused when using `localhost` or `127.0.0.1`.
+
+**Solution:** Use `host.docker.internal` instead:
+```bash
+PGWD_DB_URL="postgres://user:pass@host.docker.internal:5432/mydb"
+```
+
+### Permission denied errors
+
+**Problem:** Container cannot write to mounted volumes.
+
+**Solution:** The image runs as user `pgwd` (non-root). Ensure mounted directories have appropriate permissions:
+```bash
+chown -R 1000:1000 /path/to/volume  # pgwd user UID is typically 1000
+```
+
+### Image shows "dev" version
+
+**Problem:** `docker run --rm pgwd --version` shows `pgwd dev (commit unknown)`.
+
+**Solution:** Build with `make docker-build` instead of plain `docker build` to inject version information.
+
+### Container exits immediately
+
+**Problem:** Container stops right after starting.
+
+**Solution:** Check logs for errors:
+```bash
+docker logs pgwd
+```
+
+Common issues:
+- Missing `PGWD_DB_URL`
+- Invalid database connection string
+- Network connectivity to Postgres
+- No thresholds or notifiers configured

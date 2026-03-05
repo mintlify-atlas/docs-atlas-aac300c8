@@ -1,0 +1,698 @@
+---
+title: Troubleshooting
+description: Common issues and solutions for pgwd
+---
+
+# Troubleshooting
+
+Common issues and their solutions when using pgwd.
+
+## Configuration Errors
+
+<AccordionGroup>
+  <Accordion title='"missing database URL" error'>
+    **Error message:**
+    ```
+    missing database URL: set PGWD_DB_URL or -db-url
+    ```
+
+    **Cause:** The database connection URL is not configured.
+
+    **Solution:**
+    Set the database URL via environment variable or CLI flag:
+
+    ```bash
+    # Environment variable
+    export PGWD_DB_URL="postgres://user:pass@localhost:5432/mydb"
+    pgwd
+
+    # CLI flag
+    pgwd -db-url "postgres://user:pass@localhost:5432/mydb"
+    ```
+
+    **URL format:** `postgres://user:password@host:port/database[?options]`
+
+    See [PostgreSQL connection strings](https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING) for full syntax.
+  </Accordion>
+
+  <Accordion title='"no notifier configured" error'>
+    **Error message:**
+    ```
+    no notifier configured: set PGWD_SLACK_WEBHOOK and/or PGWD_LOKI_URL (or -slack-webhook / -loki-url), or use -dry-run
+    ```
+
+    **Cause:** No notification destination is configured and you're not in dry-run mode.
+
+    **Solution:**
+    Configure at least one notifier:
+
+    ```bash
+    # Slack only
+    export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+
+    # Loki only
+    export PGWD_LOKI_URL="http://localhost:3100/loki/api/v1/push"
+
+    # Both Slack and Loki
+    export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+    export PGWD_LOKI_URL="http://localhost:3100/loki/api/v1/push"
+
+    # Or use dry-run for testing (no notifier needed)
+    pgwd -db-url "postgres://..." -dry-run
+    ```
+  </Accordion>
+
+  <Accordion title='"no thresholds set and could not default from server" error'>
+    **Error message:**
+    ```
+    no thresholds set and could not default from server (total/active default to default-threshold-percent of max_connections). 
+    Set -threshold-total and/or -threshold-active, or use -dry-run or -force-notification
+    ```
+
+    **Cause:** pgwd could not read `max_connections` from the server and no explicit thresholds were set.
+
+    **Solution:**
+    Set at least one explicit threshold:
+
+    ```bash
+    # Set explicit thresholds
+    pgwd -db-url "postgres://..." \
+         -threshold-total 80 \
+         -slack-webhook "https://..."
+
+    # Or use 3-tier levels (recommended)
+    pgwd -db-url "postgres://..." \
+         -threshold-levels 75,85,95 \
+         -slack-webhook "https://..."
+
+    # Or use dry-run to test
+    pgwd -db-url "postgres://..." -dry-run
+    ```
+
+    **Note:** With a normal PostgreSQL server, pgwd should be able to read `max_connections` automatically. This error usually indicates a permission issue or an unusual server configuration.
+  </Accordion>
+
+  <Accordion title='"force-notification requires at least one notifier" error'>
+    **Error message:**
+    ```
+    force-notification requires at least one notifier (slack-webhook or loki-url)
+    ```
+
+    **Cause:** You used `-force-notification` without configuring a notifier.
+
+    **Solution:**
+    Add at least one notifier:
+
+    ```bash
+    pgwd -db-url "postgres://..." \
+         -force-notification \
+         -slack-webhook "https://hooks.slack.com/services/..."
+    ```
+  </Accordion>
+
+  <Accordion title='"when using threshold-stale, stale-age must be > 0" error'>
+    **Error message:**
+    ```
+    when using threshold-stale, stale-age must be > 0 (PGWD_STALE_AGE or -stale-age)
+    ```
+
+    **Cause:** You set `-threshold-stale` but didn't set `-stale-age` or set it to 0.
+
+    **Solution:**
+    Set both flags:
+
+    ```bash
+    # Alert when ≥ 1 connection is open longer than 10 minutes
+    pgwd -db-url "postgres://..." \
+         -stale-age 600 \
+         -threshold-stale 1 \
+         -slack-webhook "https://..."
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Kubernetes Issues
+
+<AccordionGroup>
+  <Accordion title='"kubectl not found in PATH" error'>
+    **Error message:**
+    ```
+    kube-postgres: kubectl not found in PATH
+    ```
+
+    **Cause:** The `kubectl` command is not available in your PATH when using `-kube-postgres`.
+
+    **Solution:**
+    Install kubectl and ensure it's in your PATH:
+
+    ```bash
+    # Check if kubectl is available
+    which kubectl
+
+    # If not found, install kubectl
+    # macOS (Homebrew)
+    brew install kubectl
+
+    # Linux (most distributions)
+    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    chmod +x kubectl
+    sudo mv kubectl /usr/local/bin/
+
+    # Verify installation
+    kubectl version --client
+    ```
+
+    **When running from cron:** Set PATH explicitly:
+
+    ```cron
+    PATH=/usr/local/bin:/usr/bin:/bin
+    */5 * * * * /usr/local/bin/pgwd -kube-postgres default/svc/postgres -db-url "postgres://..." -slack-webhook "https://..."
+    ```
+  </Accordion>
+
+  <Accordion title='"kube-postgres: invalid format" error'>
+    **Error message:**
+    ```
+    kube-postgres: invalid format
+    ```
+
+    **Cause:** The `-kube-postgres` value is not in the correct format.
+
+    **Solution:**
+    Use the format `namespace/type/name` where type is `svc` or `pod`:
+
+    ```bash
+    # Correct formats
+    pgwd -kube-postgres default/svc/postgres -db-url "postgres://..."
+    pgwd -kube-postgres default/pod/postgres-0 -db-url "postgres://..."
+
+    # Incorrect formats
+    # ❌ pgwd -kube-postgres postgres
+    # ❌ pgwd -kube-postgres default/postgres
+    # ❌ pgwd -kube-postgres svc/postgres
+    ```
+  </Accordion>
+
+  <Accordion title='"kube-local-port must be between 1 and 65535" error'>
+    **Error message:**
+    ```
+    kube-local-port must be between 1 and 65535
+    ```
+
+    **Cause:** Invalid port number for `-kube-local-port`.
+
+    **Solution:**
+    Use a valid port number:
+
+    ```bash
+    # Valid range: 1-65535
+    pgwd -kube-postgres default/svc/postgres \
+         -kube-local-port 15432 \
+         -db-url "postgres://...@localhost:15432/mydb"
+    ```
+  </Accordion>
+
+  <Accordion title='"could not get password from pod" error'>
+    **Error message:**
+    ```
+    kube: could not get password from pod (check namespace, pod name, container, and env var)
+    ```
+
+    **Cause:** pgwd couldn't read the password from the pod's environment variable.
+
+    **Possible issues:**
+    - Wrong namespace or pod name
+    - Environment variable doesn't exist in the pod
+    - Wrong container name (if pod has multiple containers)
+
+    **Solution:**
+
+    1. Verify the pod and environment variable:
+    ```bash
+    # List pods
+    kubectl get pods -n default
+
+    # Check environment variables in pod
+    kubectl exec -n default postgres-0 -- env | grep POSTGRES
+    ```
+
+    2. If using a different env var name:
+    ```bash
+    pgwd -kube-postgres default/pod/postgres-0 \
+         -kube-password-var PGPASSWORD \
+         -db-url "postgres://user:DISCOVER_MY_PASSWORD@localhost:5432/db"
+    ```
+
+    3. If the password is in a different container:
+    ```bash
+    pgwd -kube-postgres default/pod/app-0 \
+         -kube-password-container postgres \
+         -db-url "postgres://user:DISCOVER_MY_PASSWORD@localhost:5432/db"
+    ```
+  </Accordion>
+
+  <Accordion title='"port-forward failed" error'>
+    **Error message:**
+    ```
+    kube port-forward: <error details>
+    ```
+
+    **Cause:** kubectl port-forward command failed.
+
+    **Common issues:**
+    - Service or pod doesn't exist
+    - No permission to access the namespace
+    - Port already in use locally
+    - Network connectivity issues
+
+    **Solution:**
+
+    1. Verify the resource exists:
+    ```bash
+    kubectl get svc -n default postgres
+    kubectl get pod -n default postgres-0
+    ```
+
+    2. Test port-forward manually:
+    ```bash
+    kubectl port-forward -n default svc/postgres 5432:5432
+    ```
+
+    3. Check if port is already in use:
+    ```bash
+    lsof -i :5432
+    # If in use, use a different local port
+    pgwd -kube-postgres default/svc/postgres \
+         -kube-local-port 15432 \
+         -db-url "postgres://...@localhost:15432/db"
+    ```
+
+    4. Verify kubectl context and permissions:
+    ```bash
+    kubectl config current-context
+    kubectl auth can-i get pods -n default
+    ```
+  </Accordion>
+
+  <Accordion title='Validate Kubernetes access'>
+    **Use case:** Verify kubectl connectivity before running pgwd.
+
+    **Solution:**
+    Use the `-validate-k8s-access` flag:
+
+    ```bash
+    # Validate current context
+    pgwd -validate-k8s-access
+
+    # Validate specific context
+    pgwd -validate-k8s-access -kube-context production
+    ```
+
+    This checks:
+    - kubectl is in PATH
+    - Context is valid
+    - Can list pods in the cluster
+
+    No database URL or notifier configuration required.
+  </Accordion>
+</AccordionGroup>
+
+## Connection Issues
+
+<AccordionGroup>
+  <Accordion title='"postgres connect failed" error'>
+    **Error message:**
+    ```
+    postgres connect failed (check database URL, connectivity, and credentials)
+    ```
+
+    **Cause:** Cannot connect to PostgreSQL server.
+
+    **Common issues:**
+    - Wrong host, port, or database name
+    - Incorrect username or password
+    - Network/firewall blocking connection
+    - PostgreSQL not running
+    - SSL/TLS configuration mismatch
+
+    **Solution:**
+
+    1. Verify connection details:
+    ```bash
+    # Test with psql
+    psql "postgres://user:pass@localhost:5432/mydb"
+    ```
+
+    2. Check PostgreSQL is running:
+    ```bash
+    # Local PostgreSQL
+    pg_isready -h localhost -p 5432
+
+    # Kubernetes
+    kubectl exec -n default postgres-0 -- pg_isready
+    ```
+
+    3. For SSL/TLS issues, add `sslmode` parameter:
+    ```bash
+    # Disable SSL (development only)
+    -db-url "postgres://user:pass@localhost:5432/mydb?sslmode=disable"
+
+    # Require SSL
+    -db-url "postgres://user:pass@localhost:5432/mydb?sslmode=require"
+    ```
+
+    4. Test connectivity:
+    ```bash
+    # Can you reach the host and port?
+    nc -zv localhost 5432
+    telnet localhost 5432
+    ```
+
+    5. Check PostgreSQL logs for connection attempts.
+  </Accordion>
+
+  <Accordion title='"too many clients already" error'>
+    **Error message:**
+    ```
+    Postgres rejected connection: too many clients already (max_connections exceeded). Database is saturated — urgent.
+    ```
+
+    **Cause:** PostgreSQL has reached its `max_connections` limit.
+
+    **Solution:**
+
+    This is an **urgent alert** sent automatically when pgwd cannot connect due to max_connections being exceeded.
+
+    **Immediate actions:**
+    1. Check current connections:
+    ```sql
+    SELECT count(*) FROM pg_stat_activity;
+    SELECT max_connections FROM pg_settings;
+    ```
+
+    2. Identify connection sources:
+    ```sql
+    SELECT application_name, client_addr, count(*)
+    FROM pg_stat_activity
+    GROUP BY application_name, client_addr
+    ORDER BY count(*) DESC;
+    ```
+
+    3. Terminate idle connections (carefully):
+    ```sql
+    SELECT pg_terminate_backend(pid)
+    FROM pg_stat_activity
+    WHERE state = 'idle'
+    AND backend_start < now() - interval '10 minutes';
+    ```
+
+    **Long-term solutions:**
+    - Increase `max_connections` in postgresql.conf
+    - Use connection pooling (PgBouncer, pgpool)
+    - Fix application connection leaks
+    - Use pgwd with `-stale-age` to detect leaks:
+    ```bash
+    pgwd -db-url "postgres://..." \
+         -stale-age 600 \
+         -threshold-stale 1 \
+         -slack-webhook "https://..."
+    ```
+  </Accordion>
+
+  <Accordion title='Connection refused or timeout'>
+    **Symptoms:**
+    - "connection refused"
+    - "timeout"
+    - "no route to host"
+
+    **Cause:** Network connectivity issues.
+
+    **Solution:**
+
+    1. Verify PostgreSQL is listening:
+    ```bash
+    # Check PostgreSQL logs
+    tail -f /var/log/postgresql/postgresql.log
+
+    # Check if PostgreSQL is listening on expected interface
+    netstat -an | grep 5432
+    # Should show: 0.0.0.0:5432 or *:5432 for all interfaces
+    #              127.0.0.1:5432 for localhost only
+    ```
+
+    2. Check `postgresql.conf`:
+    ```ini
+    # Listen on all interfaces
+    listen_addresses = '*'
+
+    # Or specific IP
+    listen_addresses = '0.0.0.0'
+    ```
+
+    3. Check `pg_hba.conf` allows connections:
+    ```
+    # Allow from anywhere (development only)
+    host    all    all    0.0.0.0/0    md5
+
+    # Allow from specific network
+    host    all    all    10.0.0.0/8   md5
+    ```
+
+    4. Test network connectivity:
+    ```bash
+    # From pgwd host to PostgreSQL
+    ping <postgres-host>
+    nc -zv <postgres-host> 5432
+    ```
+
+    5. Check firewall rules (iptables, cloud security groups, etc.).
+  </Accordion>
+</AccordionGroup>
+
+## Notification Issues
+
+<AccordionGroup>
+  <Accordion title='Slack not receiving alerts'>
+    **Symptoms:** pgwd runs without errors but Slack doesn't receive messages.
+
+    **Solution:**
+
+    1. Test with force-notification:
+    ```bash
+    pgwd -db-url "postgres://..." \
+         -slack-webhook "https://hooks.slack.com/services/..." \
+         -force-notification
+    ```
+
+    2. Verify webhook URL:
+    - Go to Slack workspace settings
+    - Check Incoming Webhooks are enabled
+    - Verify the webhook URL is correct and active
+    - Test webhook with curl:
+    ```bash
+    curl -X POST -H 'Content-type: application/json' \
+      --data '{"text":"Test from pgwd"}' \
+      "https://hooks.slack.com/services/..."
+    ```
+
+    3. Check network connectivity:
+    ```bash
+    # Can pgwd reach Slack?
+    curl -I https://hooks.slack.com
+    ```
+
+    4. Check for proxy/firewall blocking HTTPS to hooks.slack.com.
+
+    5. Run with dry-run to see if thresholds are being exceeded:
+    ```bash
+    pgwd -db-url "postgres://..." -dry-run
+    # Check if output shows threshold exceeded
+    ```
+  </Accordion>
+
+  <Accordion title='Loki not receiving alerts'>
+    **Symptoms:** pgwd runs without errors but Loki doesn't show logs.
+
+    **Solution:**
+
+    1. Test with force-notification:
+    ```bash
+    pgwd -db-url "postgres://..." \
+         -loki-url "http://localhost:3100/loki/api/v1/push" \
+         -force-notification
+    ```
+
+    2. Verify Loki URL:
+    ```bash
+    # Test Loki endpoint
+    curl http://localhost:3100/ready
+    # Should return "ready"
+    ```
+
+    3. Check Loki logs for push errors:
+    ```bash
+    # Docker
+    docker logs loki
+
+    # Kubernetes
+    kubectl logs -n monitoring loki-0
+    ```
+
+    4. Verify label format (key=value pairs):
+    ```bash
+    # Correct
+    export PGWD_LOKI_LABELS="app=pgwd,env=prod,region=us-east-1"
+
+    # Incorrect
+    # ❌ PGWD_LOKI_LABELS="app:pgwd,env:prod"
+    # ❌ PGWD_LOKI_LABELS="app=pgwd env=prod"
+    ```
+
+    5. Query Loki to verify logs are arriving:
+    ```bash
+    # LogCLI
+    logcli query '{app="pgwd"}' --since=1h
+
+    # Or use Grafana Explore with query: {app="pgwd"}
+    ```
+
+    6. Check network connectivity:
+    ```bash
+    curl -I http://localhost:3100/loki/api/v1/push
+    ```
+  </Accordion>
+
+  <Accordion title='Alerts only sometimes sent'>
+    **Symptoms:** Alerts are sent inconsistently.
+
+    **Possible causes:**
+    - Connection stats fluctuating around threshold
+    - Network timeouts to Slack/Loki
+    - Threshold only occasionally exceeded
+
+    **Solution:**
+
+    1. Check threshold configuration:
+    ```bash
+    # See current connection counts
+    pgwd -db-url "postgres://..." -dry-run
+    ```
+
+    2. Adjust thresholds if values fluctuate:
+    ```bash
+    # Use percentage-based thresholds instead of absolute values
+    pgwd -db-url "postgres://..." \
+         -threshold-levels 75,85,95 \
+         -slack-webhook "https://..."
+    ```
+
+    3. Check pgwd logs for notification errors:
+    ```bash
+    # Look for "notify:" error messages
+    journalctl -u pgwd -f
+    ```
+
+    4. Set up regular heartbeat with force-notification:
+    ```bash
+    # Run every 2 hours with force-notification
+    # Separate cron job from regular threshold checks
+    0 */2 * * * pgwd -db-url "postgres://..." -slack-webhook "https://..." -force-notification
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Permission Issues
+
+<AccordionGroup>
+  <Accordion title='"stats: permission denied" error'>
+    **Error message (in logs):**
+    ```
+    stats: permission denied
+    ```
+
+    **Cause:** Database user cannot read `pg_stat_activity`.
+
+    **Solution:**
+
+    Most PostgreSQL roles can read `pg_stat_activity` by default. If you see this error:
+
+    1. Grant permissions:
+    ```sql
+    -- As superuser
+    GRANT pg_read_all_stats TO your_user;
+
+    -- Or for older PostgreSQL versions
+    GRANT SELECT ON pg_stat_activity TO your_user;
+    ```
+
+    2. Verify permissions:
+    ```sql
+    -- As your_user
+    SELECT count(*) FROM pg_stat_activity;
+    ```
+  </Accordion>
+
+  <Accordion title='Cannot read max_connections'>
+    **Symptoms:** pgwd reports "could not read max_connections from server".
+
+    **Cause:** Database user cannot read `pg_settings`.
+
+    **Solution:**
+
+    This is unusual - most roles can read `pg_settings` by default.
+
+    1. Verify permissions:
+    ```sql
+    -- As your_user
+    SELECT setting FROM pg_settings WHERE name = 'max_connections';
+    ```
+
+    2. Grant if needed:
+    ```sql
+    -- As superuser
+    GRANT SELECT ON pg_settings TO your_user;
+    ```
+
+    3. **Workaround:** Set explicit thresholds:
+    ```bash
+    # Use absolute values instead of percentages
+    pgwd -db-url "postgres://..." \
+         -threshold-total 80 \
+         -threshold-active 50 \
+         -slack-webhook "https://..."
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Getting Help
+
+If you're still experiencing issues:
+
+1. **Check version:**
+   ```bash
+   pgwd --version
+   ```
+
+2. **Run with verbose output:**
+   ```bash
+   # Dry-run shows connection stats without sending alerts
+   pgwd -db-url "postgres://..." -dry-run
+
+   # Force-notification tests notifier delivery
+   pgwd -db-url "postgres://..." \
+        -slack-webhook "https://..." \
+        -force-notification
+   ```
+
+3. **Check logs:**
+   ```bash
+   # systemd
+   journalctl -u pgwd -f
+
+   # Docker
+   docker logs pgwd
+   ```
+
+4. **Report issues:**
+   - GitHub: [github.com/hrodrig/pgwd/issues](https://github.com/hrodrig/pgwd/issues)
+   - Include: pgwd version, PostgreSQL version, error messages, and relevant configuration (redact secrets)

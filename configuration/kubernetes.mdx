@@ -1,0 +1,554 @@
+---
+title: Kubernetes Integration
+description: Connect to PostgreSQL running in Kubernetes clusters via kubectl port-forward
+---
+
+When PostgreSQL runs inside a Kubernetes cluster, pgwd can connect via **kubectl port-forward** without requiring a separate script or manual port-forward setup. pgwd handles the port-forward lifecycle automatically.
+
+## Overview
+
+The `-kube-postgres` flag instructs pgwd to:
+1. Run `kubectl port-forward` to forward a local port to the Postgres service or pod
+2. Connect to PostgreSQL via localhost
+3. Optionally discover the database password from the pod's environment
+4. Clean up the port-forward on exit
+
+<Note>
+  **Requirement**: `kubectl` must be installed and available in `PATH`. pgwd checks for kubectl at startup and exits with a clear error if it's missing.
+</Note>
+
+## Basic Configuration
+
+### Format
+
+<ParamField path="kube-postgres" type="string" default="">
+  Connect via kubectl port-forward using the format: `namespace/type/name`
+  
+  **Type** can be:
+  - `svc` — Kubernetes Service
+  - `pod` — Kubernetes Pod (e.g., `postgres-0` for StatefulSet)
+  
+  **Environment variable**: `PGWD_KUBE_POSTGRES`
+  
+  **Examples**:
+  - `default/svc/postgres`
+  - `production/pod/postgres-0`
+  - `myapp/svc/postgres-primary`
+</ParamField>
+
+### Database URL Requirements
+
+When using `-kube-postgres`, the database URL must:
+- Use **`localhost`** as the host
+- Use the same port as **`-kube-local-port`** (default: 5432)
+- Include username and password (or use password discovery)
+
+<CodeGroup>
+```bash With Password in URL
+# Password included directly
+export PGWD_DB_URL="postgres://postgres:secret@localhost:5432/mydb"
+export PGWD_KUBE_POSTGRES="default/svc/postgres"
+
+pgwd -dry-run
+```
+
+```bash Password Discovery
+# Use DISCOVER_MY_PASSWORD to read from pod env
+export PGWD_DB_URL="postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/mydb"
+export PGWD_KUBE_POSTGRES="default/svc/postgres"
+
+pgwd -dry-run
+```
+</CodeGroup>
+
+## Password Discovery
+
+When the database URL password is the literal string **`DISCOVER_MY_PASSWORD`**, pgwd reads the password from the Postgres pod's environment variables.
+
+### How It Works
+
+1. pgwd resolves the service to a pod (if using `svc/name`)
+2. Runs `kubectl exec` to read environment variables from the pod
+3. Looks for `POSTGRES_PASSWORD` (default) or `PGPASSWORD` as fallback
+4. Replaces `DISCOVER_MY_PASSWORD` in the URL with the discovered password
+5. Connects to localhost via the port-forward
+
+<ParamField path="kube-password-var" type="string" default="POSTGRES_PASSWORD">
+  Pod environment variable name containing the password when using `DISCOVER_MY_PASSWORD`.
+  
+  **Environment variable**: `PGWD_KUBE_PASSWORD_VAR`
+  
+  **Fallback**: If not found, pgwd tries `PGPASSWORD`
+</ParamField>
+
+<ParamField path="kube-password-container" type="string" default="">
+  Container name in the pod where the password variable exists. If empty, uses the default container (usually the first container).
+  
+  **Environment variable**: `PGWD_KUBE_PASSWORD_CONTAINER`
+</ParamField>
+
+<CodeGroup>
+```bash Default Password Variable
+# Reads POSTGRES_PASSWORD from pod
+export PGWD_DB_URL="postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/mydb"
+export PGWD_KUBE_POSTGRES="default/svc/postgres"
+
+pgwd -dry-run
+```
+
+```bash Custom Password Variable
+# Reads custom env var MY_DB_PASSWORD
+export PGWD_DB_URL="postgres://pguser:DISCOVER_MY_PASSWORD@localhost:5432/app_db"
+export PGWD_KUBE_POSTGRES="production/svc/postgres"
+export PGWD_KUBE_PASSWORD_VAR="MY_DB_PASSWORD"
+
+pgwd
+```
+
+```bash Specific Container
+# Read password from 'postgres' container in multi-container pod
+export PGWD_DB_URL="postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/mydb"
+export PGWD_KUBE_POSTGRES="default/pod/postgres-0"
+export PGWD_KUBE_PASSWORD_CONTAINER="postgres"
+
+pgwd
+```
+</CodeGroup>
+
+<Warning>
+  If password discovery fails, pgwd exits with an error: "could not get password from pod". Verify the namespace, pod name, container name, and environment variable are correct.
+</Warning>
+
+## Port Configuration
+
+### Local Port
+
+<ParamField path="kube-local-port" type="integer" default="5432">
+  Local port for kubectl port-forward. Must match the port in the database URL.
+  
+  **Environment variable**: `PGWD_KUBE_LOCAL_PORT`
+  
+  **Use case**: Set different local ports to run multiple pgwd instances against different Postgres services simultaneously.
+</ParamField>
+
+<CodeGroup>
+```bash Default Port (5432)
+export PGWD_DB_URL="postgres://postgres:secret@localhost:5432/mydb"
+export PGWD_KUBE_POSTGRES="default/svc/postgres"
+
+pgwd
+# kubectl port-forward 5432:5432
+```
+
+```bash Custom Port
+export PGWD_DB_URL="postgres://postgres:secret@localhost:15432/mydb"
+export PGWD_KUBE_POSTGRES="default/svc/postgres"
+export PGWD_KUBE_LOCAL_PORT=15432
+
+pgwd
+# kubectl port-forward 15432:5432
+```
+</CodeGroup>
+
+### Multiple Instances
+
+Use different local ports to monitor multiple Postgres instances in the same cluster:
+
+```bash
+# Terminal 1: Monitor postgres-a on port 15432
+export PGWD_KUBE_POSTGRES="mynamespace/svc/postgres-a"
+export PGWD_DB_URL="postgres://postgres:DISCOVER_MY_PASSWORD@localhost:15432/db_a"
+export PGWD_KUBE_LOCAL_PORT=15432
+pgwd -interval 60
+
+# Terminal 2: Monitor postgres-b on port 15433
+export PGWD_KUBE_POSTGRES="mynamespace/svc/postgres-b"
+export PGWD_DB_URL="postgres://postgres:DISCOVER_MY_PASSWORD@localhost:15433/db_b"
+export PGWD_KUBE_LOCAL_PORT=15433
+pgwd -interval 60
+
+# Both run simultaneously without port conflicts
+```
+
+## Multi-Cluster Setup
+
+If your kubeconfig contains multiple contexts (dev, staging, prod), use `-kube-context` to specify which cluster to use.
+
+<ParamField path="kube-context" type="string" default="">
+  Kubectl context to use. If empty, uses the current context from kubeconfig.
+  
+  **Environment variable**: `PGWD_KUBE_CONTEXT`
+  
+  **Use case**: Target specific clusters when kubeconfig has multiple contexts
+</ParamField>
+
+<CodeGroup>
+```bash Current Context (Default)
+# Uses current kubectl context
+export PGWD_KUBE_POSTGRES="default/svc/postgres"
+export PGWD_DB_URL="postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/mydb"
+
+pgwd
+```
+
+```bash Specific Context
+# Target production cluster explicitly
+export PGWD_KUBE_CONTEXT="production-us-east"
+export PGWD_KUBE_POSTGRES="database/svc/postgres"
+export PGWD_DB_URL="postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/prod_db"
+
+pgwd -interval 60
+```
+
+```bash Multiple Contexts
+# Check dev cluster
+pgwd -kube-context dev-cluster \
+     -kube-postgres default/svc/postgres \
+     -db-url "postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/dev_db" \
+     -dry-run
+
+# Check prod cluster
+pgwd -kube-context prod-cluster \
+     -kube-postgres default/svc/postgres \
+     -db-url "postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/prod_db" \
+     -dry-run
+```
+</CodeGroup>
+
+### Validate Kubernetes Access
+
+Test kubectl connectivity and list pods before running pgwd:
+
+<ParamField path="validate-k8s-access" type="boolean" default="false">
+  Validate kubectl connectivity and list pods in all namespaces, then exit. Uses `-kube-context` if set.
+  
+  **Environment variable**: `PGWD_VALIDATE_K8S_ACCESS`
+  
+  **No database or notifier required**
+</ParamField>
+
+```bash
+# Test current context
+pgwd -validate-k8s-access
+
+# Test specific context
+pgwd -kube-context production-us-east -validate-k8s-access
+
+# Output: kubectl get pods -A
+```
+
+## Running from Cron
+
+Cron runs with a **minimal environment** where `PATH` may not include kubectl. When using `-kube-postgres` with cron, you must ensure kubectl is in PATH.
+
+### Solution 1: Set PATH in Crontab
+
+```cron
+PATH=/usr/local/bin:/usr/bin:/bin
+*/5 * * * * /usr/local/bin/pgwd -kube-postgres default/svc/postgres -db-url "postgres://..." -slack-webhook "https://..."
+```
+
+### Solution 2: Wrapper Script
+
+Create a wrapper script that exports PATH:
+
+```bash
+#!/bin/sh
+# ~/bin/pgwd-wrapper.sh
+export PATH="/usr/local/bin:$PATH"
+exec /usr/local/bin/pgwd "$@"
+```
+
+Make it executable and use in cron:
+
+```bash
+chmod +x ~/bin/pgwd-wrapper.sh
+```
+
+```cron
+*/5 * * * * ~/bin/pgwd-wrapper.sh -kube-postgres default/svc/postgres -db-url "postgres://..." -slack-webhook "https://..."
+```
+
+### Error Handling
+
+If `kubectl` is not found, pgwd exits immediately with a clear message to stderr:
+
+```
+kubectl not found in PATH (required for -kube-postgres)
+```
+
+Cron often emails stderr to the user. Alternatively, redirect to a log file:
+
+```cron
+*/5 * * * * /usr/local/bin/pgwd -kube-postgres ... >> /var/log/pgwd.log 2>&1
+```
+
+## Context Strings for Notifications
+
+When using `-kube-postgres`, pgwd automatically sets context information for Slack and Loki notifications:
+
+| Field | Automatic Value | Override |
+|-------|----------------|----------|
+| **Cluster** | Cluster name from kubeconfig (via `kubectl config view`) | `PGWD_CLUSTER` or `-cluster` |
+| **Client** | Resource name (e.g., `svc/postgres`) | `PGWD_CLIENT` or `-client` |
+| **Namespace** | Namespace from `-kube-postgres` | (automatic, cannot override) |
+| **Database** | Database name from URL path | (automatic) |
+
+<ParamField path="cluster" type="string" default="">
+  Cluster name shown in notifications. When using `-kube-postgres`, auto-detected from kubeconfig if unset.
+  
+  **Environment variable**: `PGWD_CLUSTER`
+</ParamField>
+
+<ParamField path="client" type="string" default="">
+  Client/service/pod name shown in notifications. When using `-kube-postgres`, derived from resource (e.g., `svc/postgres`) if unset.
+  
+  **Environment variable**: `PGWD_CLIENT`
+</ParamField>
+
+```bash
+# Automatic context
+export PGWD_KUBE_POSTGRES="production/svc/postgres-primary"
+export PGWD_DB_URL="postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/app_db"
+
+pgwd
+# Cluster: production-us-east (from kubeconfig)
+# Client: svc/postgres-primary
+# Namespace: production
+# Database: app_db
+```
+
+```bash
+# Override cluster and client
+export PGWD_KUBE_POSTGRES="production/svc/postgres-primary"
+export PGWD_DB_URL="postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/app_db"
+export PGWD_CLUSTER="Production US East"
+export PGWD_CLIENT="Primary Postgres"
+
+pgwd
+# Uses custom cluster and client names in notifications
+```
+
+## Real-World Examples
+
+### Example 1: Basic Kubernetes Monitoring
+
+```bash
+# Monitor Postgres in default namespace
+export PGWD_KUBE_POSTGRES="default/svc/postgres"
+export PGWD_DB_URL="postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/mydb"
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/T00/B00/xxx"
+
+pgwd -interval 60 -dry-run
+# Test with dry-run first, then remove -dry-run for production
+```
+
+### Example 2: Production with Custom Context
+
+```bash
+# Production cluster with explicit context
+export PGWD_KUBE_CONTEXT="production-us-east"
+export PGWD_KUBE_POSTGRES="database/svc/postgres-primary"
+export PGWD_DB_URL="postgres://pgwd:DISCOVER_MY_PASSWORD@localhost:5432/prod_db"
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/.../prod"
+export PGWD_LOKI_URL="http://loki.monitoring:3100/loki/api/v1/push"
+export PGWD_LOKI_LABELS="env=prod,cluster=us-east,app=pgwd"
+export PGWD_THRESHOLD_LEVELS="75,85,95"
+export PGWD_INTERVAL=60
+
+pgwd
+```
+
+### Example 3: Multiple Services with Cron
+
+Monitor multiple Postgres services from a single cron schedule:
+
+```bash
+#!/bin/bash
+# ~/bin/pgwd-cron.sh
+mkdir -p ~/log
+export KUBECONFIG=/path/to/kubeconfig
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+export PATH="/usr/local/bin:$PATH"
+PGWD=/usr/local/bin/pgwd
+
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) checking postgres-a"
+$PGWD -kube-postgres mynamespace/svc/postgres-a \
+  -kube-local-port 15432 \
+  -db-url 'postgres://postgres:DISCOVER_MY_PASSWORD@localhost:15432/db_a'
+
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) checking postgres-b"
+$PGWD -kube-postgres mynamespace/svc/postgres-b \
+  -kube-local-port 15433 \
+  -db-url 'postgres://postgres:DISCOVER_MY_PASSWORD@localhost:15433/db_b'
+
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) checking postgres-c"
+$PGWD -kube-postgres mynamespace/svc/postgres-c \
+  -kube-local-port 15434 \
+  -db-url 'postgres://postgres:DISCOVER_MY_PASSWORD@localhost:15434/db_c'
+
+exit 0
+```
+
+**Crontab**:
+```cron
+PATH=/usr/bin:/bin
+*/5 * * * * /bin/bash -l -c '~/bin/pgwd-cron.sh >> ~/log/pgwd.log 2>&1'
+```
+
+### Example 4: Heartbeat with Force Notification
+
+Send periodic test notifications to verify the monitoring pipeline:
+
+```bash
+#!/bin/bash
+# ~/bin/pgwd-heartbeat.sh
+mkdir -p ~/log
+export KUBECONFIG=/path/to/kubeconfig
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+export PATH="/usr/local/bin:$PATH"
+PGWD=/usr/local/bin/pgwd
+
+# Use different ports to avoid conflicts with check script
+$PGWD -kube-postgres mynamespace/svc/postgres-a \
+  -kube-local-port 25432 \
+  -db-url 'postgres://postgres:DISCOVER_MY_PASSWORD@localhost:25432/db_a' \
+  -force-notification
+
+$PGWD -kube-postgres mynamespace/svc/postgres-b \
+  -kube-local-port 25433 \
+  -db-url 'postgres://postgres:DISCOVER_MY_PASSWORD@localhost:25433/db_b' \
+  -force-notification
+
+exit 0
+```
+
+**Crontab** (every 2 hours):
+```cron
+0 */2 * * * /bin/bash -l -c '~/bin/pgwd-heartbeat.sh >> ~/log/pgwd.log 2>&1'
+```
+
+### Example 5: StatefulSet Pod Monitoring
+
+```bash
+# Monitor specific pod in StatefulSet
+export PGWD_KUBE_POSTGRES="database/pod/postgres-0"
+export PGWD_DB_URL="postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/mydb"
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+
+pgwd -interval 60
+
+# No service resolution needed — connects directly to pod
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="kubectl not found in PATH">
+    **Error**: `kubectl not found in PATH (required for -kube-postgres)`
+    
+    **Solution**:
+    1. Install kubectl: https://kubernetes.io/docs/tasks/tools/
+    2. Ensure kubectl is in PATH: `which kubectl`
+    3. When running from cron, set PATH explicitly (see [Running from Cron](#running-from-cron))
+    
+    ```bash
+    # Test kubectl
+    which kubectl
+    # Should output: /usr/local/bin/kubectl
+    
+    # If not found, add to PATH
+    export PATH="/usr/local/bin:$PATH"
+    ```
+  </Accordion>
+
+  <Accordion title="Could not get pod from service">
+    **Error**: `could not get pod from service postgres (no endpoints or selector)`
+    
+    **Solution**:
+    1. Verify the service exists: `kubectl get svc -n <namespace>`
+    2. Check service has endpoints: `kubectl get endpoints -n <namespace> <service>`
+    3. Ensure pods are running: `kubectl get pods -n <namespace>`
+    4. Use pod name directly if service resolution fails:
+       ```bash
+       -kube-postgres default/pod/postgres-0
+       ```
+  </Accordion>
+
+  <Accordion title="Could not find password in pod">
+    **Error**: `could not find POSTGRES_PASSWORD or PGPASSWORD in pod`
+    
+    **Solution**:
+    1. Verify password env var exists in pod:
+       ```bash
+       kubectl exec -n <namespace> <pod> -- printenv | grep PASSWORD
+       ```
+    2. Use `-kube-password-var` to specify custom variable:
+       ```bash
+       -kube-password-var MY_DB_PASSWORD
+       ```
+    3. Specify container if multi-container pod:
+       ```bash
+       -kube-password-container postgres
+       ```
+    4. Or include password directly in URL instead of `DISCOVER_MY_PASSWORD`
+  </Accordion>
+
+  <Accordion title="Port already in use">
+    **Error**: Port-forward fails or pgwd cannot connect
+    
+    **Solution**:
+    1. Check if port is already in use:
+       ```bash
+       lsof -i :5432
+       ```
+    2. Use a different local port:
+       ```bash
+       -kube-local-port 15432
+       # Update DB URL to match: localhost:15432
+       ```
+    3. Kill existing port-forwards:
+       ```bash
+       pkill -f "kubectl port-forward"
+       ```
+  </Accordion>
+
+  <Accordion title="Wrong cluster being used">
+    **Issue**: pgwd connects to the wrong Kubernetes cluster
+    
+    **Solution**:
+    1. Check current context:
+       ```bash
+       kubectl config current-context
+       ```
+    2. List all contexts:
+       ```bash
+       kubectl config get-contexts
+       ```
+    3. Set context explicitly:
+       ```bash
+       -kube-context production-us-east
+       ```
+    4. Or switch default context:
+       ```bash
+       kubectl config use-context production-us-east
+       ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Cron Deployment" icon="clock" href="/deployment/cron">
+    Schedule periodic checks with cron
+  </Card>
+  <Card title="Docker Deployment" icon="docker" href="/deployment/docker">
+    Run pgwd in containers with Kubernetes
+  </Card>
+  <Card title="Multi-Environment Guide" icon="layer-group" href="/guides/multi-environment">
+    Best practices for managing multiple environments
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/reference/troubleshooting">
+    Common issues and solutions
+  </Card>
+</CardGroup>

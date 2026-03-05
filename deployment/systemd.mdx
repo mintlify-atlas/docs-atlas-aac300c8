@@ -1,0 +1,484 @@
+---
+title: systemd Deployment
+description: Run pgwd as a systemd service in daemon or scheduled modes
+---
+
+pgwd integrates with systemd for production deployments on Linux. You can run it as a long-running daemon or as a scheduled one-shot service.
+
+## Two Deployment Modes
+
+systemd offers two ways to run pgwd:
+
+| Mode | When to Use | Service File |
+|------|-------------|-------------|
+| **Daemon** | Continuous monitoring with `PGWD_INTERVAL` | `pgwd.service` |
+| **Timer** | Scheduled checks (cron-like) without interval | `pgwd.timer` + `pgwd-once.service` |
+
+<Note>
+Both modes use the same environment file for configuration. The only difference is how scheduling works: daemon mode uses `PGWD_INTERVAL`, timer mode uses systemd's scheduling.
+</Note>
+
+## File Locations
+
+| Component | Path |
+|-----------|------|
+| Binary | `/usr/local/bin/pgwd` |
+| Environment file (option A) | `/etc/pgwd.env` |
+| Environment file (option B) | `/etc/pgwd/pgwd.env` |
+| Service files | `/etc/systemd/system/pgwd.service` |
+
+The unit files try both environment paths. Choose one location for your configuration.
+
+## Environment File Setup
+
+Create an environment file with your pgwd configuration:
+
+<Steps>
+  <Step title="Create environment file">
+    ```bash
+    # Option A: Simple path
+    sudo tee /etc/pgwd.env > /dev/null << 'EOF'
+PGWD_DB_URL=postgres://user:pass@localhost:5432/mydb
+PGWD_THRESHOLD_TOTAL=80
+PGWD_THRESHOLD_IDLE=50
+PGWD_SLACK_WEBHOOK=https://hooks.slack.com/services/...
+PGWD_LOKI_URL=http://localhost:3100/loki/api/v1/push
+PGWD_INTERVAL=60
+EOF
+
+    # Option B: Dedicated directory
+    sudo mkdir -p /etc/pgwd
+    sudo tee /etc/pgwd/pgwd.env > /dev/null << 'EOF'
+PGWD_DB_URL=postgres://user:pass@localhost:5432/mydb
+PGWD_THRESHOLD_TOTAL=80
+PGWD_THRESHOLD_IDLE=50
+PGWD_SLACK_WEBHOOK=https://hooks.slack.com/services/...
+PGWD_LOKI_URL=http://localhost:3100/loki/api/v1/push
+PGWD_INTERVAL=60
+EOF
+    ```
+  </Step>
+
+  <Step title="Restrict permissions">
+    Protect secrets in the environment file:
+
+    ```bash
+    sudo chmod 600 /etc/pgwd.env
+    # or
+    sudo chmod 600 /etc/pgwd/pgwd.env
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+The environment file contains sensitive credentials. Always restrict it to `600` (read/write for owner only).
+</Warning>
+
+## Daemon Mode (Continuous)
+
+Run pgwd continuously, checking every `PGWD_INTERVAL` seconds.
+
+<Steps>
+  <Step title="Install binary">
+    ```bash
+    # From source
+    go install github.com/hrodrig/pgwd@latest
+    sudo cp $GOBIN/pgwd /usr/local/bin/pgwd
+
+    # Or download from releases
+    # wget https://github.com/hrodrig/pgwd/releases/download/v0.3.6/pgwd-linux-amd64.tar.gz
+    # tar xzf pgwd-linux-amd64.tar.gz
+    # sudo cp pgwd /usr/local/bin/pgwd
+    ```
+  </Step>
+
+  <Step title="Copy unit file">
+    ```bash
+    sudo cp contrib/systemd/pgwd.service /etc/systemd/system/
+    ```
+
+    The service file looks like this:
+
+    ```systemd
+    [Unit]
+    Description=Postgres Watch Dog (daemon)
+    Documentation=https://github.com/hrodrig/pgwd
+    After=network-online.target
+    Wants=network-online.target
+
+    [Service]
+    Type=simple
+    ExecStart=/usr/local/bin/pgwd
+    Restart=on-failure
+    RestartSec=30
+
+    EnvironmentFile=-/etc/pgwd/pgwd.env
+    EnvironmentFile=-/etc/pgwd.env
+
+    [Install]
+    WantedBy=multi-user.target
+    ```
+  </Step>
+
+  <Step title="Create environment file">
+    ```bash
+    sudo tee /etc/pgwd.env > /dev/null << 'EOF'
+PGWD_DB_URL=postgres://user:pass@localhost:5432/mydb
+PGWD_THRESHOLD_TOTAL=80
+PGWD_THRESHOLD_IDLE=50
+PGWD_SLACK_WEBHOOK=https://hooks.slack.com/services/...
+PGWD_LOKI_URL=http://localhost:3100/loki/api/v1/push
+PGWD_INTERVAL=60
+EOF
+    sudo chmod 600 /etc/pgwd.env
+    ```
+  </Step>
+
+  <Step title="Enable and start service">
+    ```bash
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now pgwd
+    sudo systemctl status pgwd
+    ```
+  </Step>
+</Steps>
+
+### Daemon Management
+
+```bash
+# Check status
+sudo systemctl status pgwd
+
+# Start service
+sudo systemctl start pgwd
+
+# Stop service
+sudo systemctl stop pgwd
+
+# Restart service
+sudo systemctl restart pgwd
+
+# Disable autostart
+sudo systemctl disable pgwd
+
+# View logs
+journalctl -u pgwd -f
+
+# View recent logs
+journalctl -u pgwd -n 50
+```
+
+## Timer Mode (Scheduled)
+
+Run pgwd once on a schedule (like cron). The timer handles scheduling, so you don't need `PGWD_INTERVAL`.
+
+<Steps>
+  <Step title="Install binary">
+    Same as daemon mode:
+
+    ```bash
+    go install github.com/hrodrig/pgwd@latest
+    sudo cp $GOBIN/pgwd /usr/local/bin/pgwd
+    ```
+  </Step>
+
+  <Step title="Copy timer and service files">
+    ```bash
+    sudo cp contrib/systemd/pgwd-once.service /etc/systemd/system/
+    sudo cp contrib/systemd/pgwd.timer /etc/systemd/system/
+    ```
+
+    **pgwd-once.service:**
+    ```systemd
+    [Unit]
+    Description=Postgres Watch Dog (one-shot)
+    Documentation=https://github.com/hrodrig/pgwd
+    After=network-online.target
+    Wants=network-online.target
+
+    [Service]
+    Type=oneshot
+    ExecStart=/usr/local/bin/pgwd
+
+    EnvironmentFile=-/etc/pgwd/pgwd.env
+    EnvironmentFile=-/etc/pgwd.env
+    ```
+
+    **pgwd.timer:**
+    ```systemd
+    [Unit]
+    Description=Run Postgres Watch Dog every 5 minutes
+    Documentation=https://github.com/hrodrig/pgwd
+
+    [Timer]
+    OnBootSec=1min
+    OnUnitActiveSec=5min
+    Persistent=true
+
+    [Install]
+    WantedBy=timers.target
+    ```
+  </Step>
+
+  <Step title="Create environment file">
+    ```bash
+    sudo tee /etc/pgwd.env > /dev/null << 'EOF'
+PGWD_DB_URL=postgres://user:pass@localhost:5432/mydb
+PGWD_THRESHOLD_TOTAL=80
+PGWD_THRESHOLD_IDLE=50
+PGWD_SLACK_WEBHOOK=https://hooks.slack.com/services/...
+PGWD_LOKI_URL=http://localhost:3100/loki/api/v1/push
+# No PGWD_INTERVAL needed - timer controls schedule
+EOF
+    sudo chmod 600 /etc/pgwd.env
+    ```
+
+    <Note>
+    Omit `PGWD_INTERVAL` or set it to `0` when using timer mode. The timer controls when pgwd runs.
+    </Note>
+  </Step>
+
+  <Step title="Enable and start timer">
+    ```bash
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now pgwd.timer
+    systemctl list-timers --all | grep pgwd
+    ```
+  </Step>
+</Steps>
+
+### Timer Management
+
+```bash
+# Check timer status
+systemctl list-timers --all | grep pgwd
+systemctl status pgwd.timer
+
+# Start timer
+sudo systemctl start pgwd.timer
+
+# Stop timer
+sudo systemctl stop pgwd.timer
+
+# View logs from timer runs
+journalctl -u pgwd-once -f
+
+# Trigger manual run
+sudo systemctl start pgwd-once
+```
+
+### Adjusting Timer Interval
+
+Edit the timer file to change how often pgwd runs:
+
+```bash
+sudo systemctl edit --full pgwd.timer
+```
+
+Change `OnUnitActiveSec` value:
+
+```systemd
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=10min  # Changed from 5min to 10min
+Persistent=true
+```
+
+Then reload:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart pgwd.timer
+```
+
+## Viewing Logs
+
+Use `journalctl` to view pgwd logs:
+
+<CodeGroup>
+```bash Daemon Mode
+# Follow logs in real-time
+journalctl -u pgwd -f
+
+# View recent logs
+journalctl -u pgwd -n 50
+
+# View logs since yesterday
+journalctl -u pgwd --since yesterday
+
+# View logs with timestamps
+journalctl -u pgwd -o short-precise
+```
+
+```bash Timer Mode
+# Follow logs from timer runs
+journalctl -u pgwd-once -f
+
+# View recent runs
+journalctl -u pgwd-once -n 50
+
+# View logs since specific time
+journalctl -u pgwd-once --since "2024-01-01 00:00:00"
+```
+</CodeGroup>
+
+### Log Output Examples
+
+Successful check:
+```
+Jan 15 10:00:00 server pgwd[12345]: total=42 active=3 idle=39
+Jan 15 10:00:00 server pgwd[12345]: All thresholds OK
+```
+
+Threshold exceeded:
+```
+Jan 15 10:05:00 server pgwd[12345]: total=85 active=12 idle=73
+Jan 15 10:05:00 server pgwd[12345]: Threshold exceeded: total 85 >= 80
+Jan 15 10:05:00 server pgwd[12345]: Notification sent to Slack
+```
+
+## Running as Dedicated User
+
+For better security, run pgwd as a dedicated user:
+
+<Steps>
+  <Step title="Create pgwd user">
+    ```bash
+    sudo useradd -r -s /bin/false pgwd
+    ```
+  </Step>
+
+  <Step title="Set file permissions">
+    ```bash
+    # Allow pgwd user to read env file
+    sudo chown root:pgwd /etc/pgwd.env
+    sudo chmod 640 /etc/pgwd.env
+    ```
+  </Step>
+
+  <Step title="Edit service file">
+    ```bash
+    sudo systemctl edit --full pgwd.service
+    ```
+
+    Add under `[Service]`:
+    ```systemd
+    User=pgwd
+    Group=pgwd
+    ```
+  </Step>
+
+  <Step title="Reload and restart">
+    ```bash
+    sudo systemctl daemon-reload
+    sudo systemctl restart pgwd
+    ```
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+### Service fails to start
+
+**Check logs:**
+```bash
+sudo systemctl status pgwd
+journalctl -u pgwd -n 50
+```
+
+Common issues:
+- Missing environment file
+- Invalid database URL
+- Permission denied on env file
+- Binary not found at `/usr/local/bin/pgwd`
+
+### Environment variables not loaded
+
+**Verify env file exists:**
+```bash
+ls -la /etc/pgwd.env
+# or
+ls -la /etc/pgwd/pgwd.env
+```
+
+**Check file permissions:**
+```bash
+sudo cat /etc/pgwd.env  # Should show your config
+```
+
+**Test manually:**
+```bash
+# Source env file and run pgwd
+set -a
+source /etc/pgwd.env
+set +a
+/usr/local/bin/pgwd -dry-run
+```
+
+### Timer not running
+
+**Check timer is enabled:**
+```bash
+systemctl list-timers --all | grep pgwd
+```
+
+Should show:
+```
+Sun 2024-01-15 10:05:00 EST 4min left Sun 2024-01-15 10:00:00 EST 5min ago pgwd.timer pgwd-once.service
+```
+
+**Enable if missing:**
+```bash
+sudo systemctl enable --now pgwd.timer
+```
+
+### Logs show kubectl not found
+
+**Problem:** When using `-kube-postgres`, kubectl is not in PATH.
+
+**Solution:** Add kubectl location to service file:
+
+```bash
+sudo systemctl edit pgwd.service
+```
+
+Add:
+```systemd
+[Service]
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+```
+
+Then:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart pgwd
+```
+
+### Service restarts frequently
+
+**Check for connection issues:**
+```bash
+journalctl -u pgwd -n 100
+```
+
+**Increase restart delay:**
+```bash
+sudo systemctl edit pgwd.service
+```
+
+Add:
+```systemd
+[Service]
+RestartSec=60  # Changed from 30 to 60 seconds
+```
+
+### Viewing systemd service file
+
+To see the active service configuration:
+
+```bash
+systemctl cat pgwd.service
+# or for timer
+systemctl cat pgwd.timer
+systemctl cat pgwd-once.service
+```

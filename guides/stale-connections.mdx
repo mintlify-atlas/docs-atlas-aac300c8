@@ -1,0 +1,394 @@
+---
+title: Stale Connection Monitoring
+description: Detect connection leaks and long-lived connections that never close
+---
+
+# Stale Connection Monitoring
+
+Stale connections are database connections that remain open for an unusually long time without closing. They often indicate connection leaks, misconfigured connection pools, or application bugs where connections aren't properly released.
+
+## What Are Stale Connections?
+
+A connection is considered "stale" when it has been open longer than a configured age threshold. pgwd determines connection age using the `backend_start` timestamp from PostgreSQL's `pg_stat_activity` view.
+
+```sql
+-- What pgwd queries internally
+SELECT count(*)
+FROM pg_stat_activity
+WHERE datname = current_database()
+  AND (now() - backend_start) > (make_interval(secs => $1))
+```
+
+<Note>
+Stale connections are measured from when the backend process started (`backend_start`), not from the last query execution. A connection can be "idle" but not "stale" if it was recently opened.
+</Note>
+
+## Common Causes
+
+<CardGroup cols={2}>
+  <Card title="Connection Leaks" icon="droplet">
+    Application code opens connections but never closes them, often due to missing `defer close()` or exception handling issues
+  </Card>
+  
+  <Card title="Pool Misconfiguration" icon="water">
+    Connection pool settings allow connections to remain open indefinitely without recycling
+  </Card>
+  
+  <Card title="Abandoned Transactions" icon="pause">
+    Long-running or forgotten transactions hold connections open, blocking resources
+  </Card>
+  
+  <Card title="Development/Debug Sessions" icon="terminal">
+    Interactive database sessions (psql, IDEs) left open during development or troubleshooting
+  </Card>
+</CardGroup>
+
+## Configuration
+
+Stale connection monitoring requires **two parameters**:
+
+### `stale-age`
+
+Defines how long (in seconds) a connection can remain open before being considered stale.
+
+```bash
+# 10 minutes (600 seconds)
+-stale-age 600
+
+# Or via environment
+export PGWD_STALE_AGE=600
+```
+
+### `threshold-stale`
+
+Alert when the count of stale connections meets or exceeds this value.
+
+```bash
+# Alert on ANY stale connection
+-threshold-stale 1
+
+# Alert only when 5+ stale connections exist
+-threshold-stale 5
+
+# Environment
+export PGWD_THRESHOLD_STALE=1
+```
+
+<Warning>
+Both parameters are required. If you set `threshold-stale` without `stale-age > 0`, pgwd will exit with an error:
+
+```
+when using threshold-stale, stale-age must be > 0
+```
+</Warning>
+
+## Basic Usage
+
+### Alert on Any Stale Connection
+
+Most sensitive configuration — alerts if even one connection is older than 10 minutes:
+
+```bash
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" \
+     -stale-age 600 \
+     -threshold-stale 1 \
+     -slack-webhook "https://hooks.slack.com/services/..."
+```
+
+### Combined with Other Thresholds
+
+Monitor total capacity AND connection leaks simultaneously:
+
+```bash
+pgwd -db-url "postgres://..." \
+     -threshold-total 90 \
+     -threshold-idle 60 \
+     -stale-age 600 \
+     -threshold-stale 1 \
+     -interval 120 \
+     -slack-webhook "https://..." \
+     -loki-url "http://localhost:3100/loki/api/v1/push"
+```
+
+**Behavior:** Each exceeded threshold generates a separate alert in the same run.
+
+## Choosing Thresholds
+
+### Stale Age Selection
+
+The right `stale-age` depends on your application's connection patterns:
+
+| Application Type | Recommended `stale-age` | Rationale |
+|------------------|-------------------------|----------|
+| **Microservices (REST APIs)** | 300-600s (5-10 min) | Connections should be short-lived; pools recycle frequently |
+| **Web applications** | 600-1800s (10-30 min) | Session-based patterns may hold connections longer |
+| **Batch processing** | 1800-3600s (30-60 min) | Long-running jobs legitimately hold connections |
+| **Data warehouses/ETL** | 3600-7200s (1-2 hours) | Complex queries and bulk operations take time |
+| **Development/staging** | 600s (10 min) | Aggressive leak detection for early bug finding |
+
+<Tip>
+Start with **600 seconds (10 minutes)** as a baseline. Monitor for false positives, then adjust:
+- **Too many alerts?** Increase `stale-age`
+- **Leaks not caught soon enough?** Decrease `stale-age`
+</Tip>
+
+### Threshold Count Selection
+
+| Use Case | `threshold-stale` | Why |
+|----------|-------------------|-----|
+| **Zero-tolerance leak detection** | 1 | Catch any leak immediately; expect clean connection hygiene |
+| **Tolerant of occasional stale connections** | 3-5 | Allow for legitimate edge cases (admin sessions, monitoring tools) |
+| **Focus on large-scale leaks** | 10+ | Only alert when the leak is significant enough to impact capacity |
+
+<Note>
+Setting `threshold-stale=1` is common in production for catching leaks early, but you may see alerts from:
+- Database monitoring tools (pgAdmin, DataGrip)
+- Long-running administrative queries
+- Background workers holding connections
+
+Review `pg_stat_activity` to identify legitimate long-lived connections and adjust accordingly.
+</Note>
+
+## Real-World Examples
+
+### Example 1: Aggressive Leak Detection
+
+**Goal:** Catch connection leaks within 5 minutes in a microservice environment.
+
+```bash
+#!/bin/bash
+# Check every 2 minutes, alert on any connection > 5 minutes old
+export PGWD_DB_URL="postgres://apiuser:pass@localhost:5432/api_db"
+export PGWD_STALE_AGE=300
+export PGWD_THRESHOLD_STALE=1
+export PGWD_INTERVAL=120
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+
+pgwd
+```
+
+**Result:** Immediate alerts when connection hygiene degrades, allowing fast remediation.
+
+### Example 2: Balanced Monitoring with Capacity Awareness
+
+**Goal:** Monitor both capacity and leaks with appropriate tolerances.
+
+```bash
+pgwd -db-url "postgres://user:pass@prod-db:5432/mydb" \
+     -threshold-levels 70,85,95 \
+     -stale-age 900 \
+     -threshold-stale 3 \
+     -interval 60 \
+     -slack-webhook "https://..." \
+     -loki-url "http://loki:3100/loki/api/v1/push" \
+     -loki-labels "app=pgwd,env=prod,db=mydb"
+```
+
+**Configuration reasoning:**
+- 3-tier capacity alerts (70%, 85%, 95%)
+- 15-minute stale age allows for some longer operations
+- Threshold of 3 stale connections avoids noise from occasional admin sessions
+- Both Slack (immediate) and Loki (historical analysis)
+
+### Example 3: Development Environment with Dry Run
+
+**Goal:** Discover stale connection patterns without alerting.
+
+```bash
+# Discover current state
+pgwd -db-url "postgres://dev:dev@localhost:5432/dev_db" \
+     -stale-age 300 \
+     -threshold-stale 1 \
+     -dry-run
+
+# Sample output
+# total=12 active=2 idle=10 stale=3
+```
+
+<Tip>
+Use dry-run with stale monitoring to:
+- Identify how many connections are typically long-lived
+- Calibrate `stale-age` before enabling alerts
+- Debug whether your connection pooling is working correctly
+</Tip>
+
+## Investigating Stale Connections
+
+When you receive a stale connection alert, query `pg_stat_activity` to identify the culprits:
+
+```sql
+-- Find connections open longer than 10 minutes
+SELECT 
+  pid,
+  usename,
+  application_name,
+  client_addr,
+  backend_start,
+  state,
+  state_change,
+  query,
+  now() - backend_start AS connection_age
+FROM pg_stat_activity
+WHERE datname = current_database()
+  AND (now() - backend_start) > interval '10 minutes'
+ORDER BY backend_start ASC;
+```
+
+**Key fields:**
+- `application_name`: Identifies the client (often set by connection pools)
+- `client_addr`: Source IP address (useful for distributed systems)
+- `state`: `idle`, `active`, `idle in transaction` (the latter is especially problematic)
+- `backend_start`: When the connection was opened
+- `query`: Last executed query (may indicate the issue)
+
+<Accordion title="Example: Identifying a connection leak">
+  **Alert received:** `Stale connections: 5 >= 1 (stale-age=600s)`
+  
+  **Investigation query:**
+  ```sql
+  SELECT application_name, state, count(*), 
+         min(now() - backend_start) as youngest,
+         max(now() - backend_start) as oldest
+  FROM pg_stat_activity
+  WHERE datname = current_database()
+    AND (now() - backend_start) > interval '10 minutes'
+  GROUP BY application_name, state;
+  ```
+  
+  **Result:**
+  ```
+  application_name | state              | count | youngest | oldest
+  -----------------+--------------------+-------+----------+--------
+  myapp-v2         | idle in transaction|   5   | 00:12:00 | 02:34:00
+  ```
+  
+  **Diagnosis:** Application version `myapp-v2` is leaving transactions open (connection leak in transaction handling)
+</Accordion>
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Start Permissive" icon="door-open">
+    Begin with a high `stale-age` (e.g., 1800s) and lower `threshold-stale` (e.g., 5), then tighten as you understand patterns
+  </Card>
+  
+  <Card title="Monitor State Changes" icon="chart-line">
+    Track `state` in `pg_stat_activity` — `idle in transaction` is more problematic than plain `idle`
+  </Card>
+  
+  <Card title="Application Labels" icon="tag">
+    Use connection string `application_name` parameter to identify services: `postgres://user:pass@host/db?application_name=api-service`
+  </Card>
+  
+  <Card title="Combine with Loki" icon="magnifying-glass">
+    Send stale alerts to Loki for trend analysis: are leaks increasing over time?
+  </Card>
+</CardGroup>
+
+### Configuration Pooling Integration
+
+Most connection pools have built-in lifecycle management. Configure them to complement pgwd monitoring:
+
+**Go (pgx):**
+```go
+config.MaxConnLifetime = 30 * time.Minute
+config.MaxConnIdleTime = 5 * time.Minute
+```
+
+**Python (SQLAlchemy):**
+```python
+engine = create_engine(
+    'postgresql://...',
+    pool_recycle=1800,  # Recycle after 30 minutes
+    pool_pre_ping=True  # Validate before using
+)
+```
+
+**Node.js (pg):**
+```javascript
+const pool = new Pool({
+  max: 20,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
+});
+```
+
+<Warning>
+Even with pool recycling, bugs can cause connections to leak outside the pool. pgwd provides an independent safety net beyond pool-level protections.
+</Warning>
+
+## Troubleshooting
+
+### No Stale Connections Detected (But You Expect Some)
+
+**Check 1:** Verify `stale-age` isn't too high
+```bash
+pgwd -db-url "postgres://..." -stale-age 600 -threshold-stale 1 -dry-run
+```
+
+**Check 2:** Query `pg_stat_activity` directly
+```sql
+SELECT count(*)
+FROM pg_stat_activity
+WHERE datname = current_database()
+  AND (now() - backend_start) > interval '10 minutes';
+```
+
+**Check 3:** Ensure connections exist at all
+```sql
+SELECT count(*) FROM pg_stat_activity WHERE datname = current_database();
+```
+
+### Too Many False Positives
+
+**Solution 1:** Increase `stale-age`
+```bash
+# From 10 minutes to 30 minutes
+-stale-age 1800
+```
+
+**Solution 2:** Increase `threshold-stale` to tolerate known long-lived connections
+```bash
+# Ignore up to 3 stale connections
+-threshold-stale 4
+```
+
+**Solution 3:** Identify and whitelist legitimate long-lived connections
+- Database monitoring tools
+- Replication connections
+- Administrative sessions
+
+<Note>
+PostgreSQL doesn't provide built-in filtering by application or user in the stale check. Consider combining pgwd alerts with custom SQL queries for more granular analysis.
+</Note>
+
+## Integration with Monitoring Strategies
+
+Stale connection monitoring works best as part of a comprehensive strategy:
+
+```bash
+# Complete monitoring setup
+pgwd -db-url "postgres://user:pass@prod-db:5432/mydb" \
+     -threshold-levels 75,85,95 \  # Capacity alerts
+     -threshold-idle 60 \           # Pool size monitoring
+     -stale-age 600 \               # 10-minute leak detection
+     -threshold-stale 1 \           # Zero tolerance for leaks
+     -interval 60 \                 # Check every minute
+     -slack-webhook "https://..." \ # Immediate alerts
+     -loki-url "http://loki:3100/loki/api/v1/push" \
+     -loki-labels "app=pgwd,env=prod,service=api"
+```
+
+See the [Monitoring Strategies guide](/guides/monitoring-strategies) for comprehensive deployment patterns.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Monitoring Strategies" icon="chart-mixed" href="/guides/monitoring-strategies">
+    Learn about deployment modes and threshold strategies
+  </Card>
+  
+  <Card title="Multi-Environment Setup" icon="layer-group" href="/guides/multi-environment">
+    Configure stale monitoring across dev, staging, and production
+  </Card>
+</CardGroup>

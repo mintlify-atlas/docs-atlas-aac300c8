@@ -1,0 +1,554 @@
+---
+title: Multi-Environment Setup
+description: Configure pgwd across development, staging, and production environments with Kubernetes support
+---
+
+# Multi-Environment Setup
+
+Running pgwd across multiple environments (dev, staging, production) or monitoring multiple PostgreSQL instances requires careful configuration management. This guide covers environment-specific patterns, Kubernetes multi-context setups, and real-world cron examples.
+
+## Environment Variable Strategy
+
+Every pgwd parameter can be set via environment variables with the `PGWD_` prefix. This makes environment-specific configuration straightforward:
+
+### Single Environment Pattern
+
+```bash
+# Production environment
+export PGWD_DB_URL="postgres://user:pass@prod-db:5432/mydb"
+export PGWD_THRESHOLD_LEVELS="70,85,95"
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/T00/B00/xxx"
+export PGWD_LOKI_URL="http://loki-prod:3100/loki/api/v1/push"
+export PGWD_LOKI_LABELS="app=pgwd,env=prod,service=api"
+export PGWD_INTERVAL=60
+
+pgwd
+```
+
+```bash
+# Staging environment (different DB, labels, and interval)
+export PGWD_DB_URL="postgres://user:pass@staging-db:5432/mydb"
+export PGWD_THRESHOLD_LEVELS="70,85,95"
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/T00/B00/yyy"
+export PGWD_LOKI_URL="http://loki-staging:3100/loki/api/v1/push"
+export PGWD_LOKI_LABELS="app=pgwd,env=staging,service=api"
+export PGWD_INTERVAL=120  # Less frequent checks in staging
+
+pgwd
+```
+
+<Tip>
+**CLI flags override environment variables**, allowing you to set defaults via env and override specific values as needed:
+
+```bash
+export PGWD_DB_URL="postgres://default-db:5432/mydb"
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/..."
+
+# Override DB for a specific check
+pgwd -db-url "postgres://special-db:5432/otherdb"
+```
+</Tip>
+
+## Kubernetes Multi-Context Setup
+
+When monitoring PostgreSQL in Kubernetes across multiple clusters (dev, staging, prod), use the `-kube-context` flag to target specific clusters.
+
+### Context Selection
+
+Verify your kubeconfig contexts:
+
+```bash
+# List available contexts
+kubectl config get-contexts
+
+# Output example:
+CURRENT   NAME         CLUSTER      AUTHINFO     NAMESPACE
+*         dev-cluster  dev-k8s      dev-user     default
+          staging      staging-k8s  staging-user default
+          prod         prod-k8s     prod-user    default
+```
+
+### Context-Specific Monitoring
+
+```bash
+# Development cluster
+pgwd -kube-postgres dev-namespace/svc/postgres \
+     -kube-context dev-cluster \
+     -db-url "postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/dev_db" \
+     -slack-webhook "https://..." \
+     -loki-labels "app=pgwd,env=dev"
+
+# Staging cluster
+pgwd -kube-postgres staging-namespace/svc/postgres \
+     -kube-context staging \
+     -db-url "postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/staging_db" \
+     -slack-webhook "https://..." \
+     -loki-labels "app=pgwd,env=staging"
+
+# Production cluster
+pgwd -kube-postgres prod-namespace/svc/postgres \
+     -kube-context prod \
+     -db-url "postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/prod_db" \
+     -slack-webhook "https://..." \
+     -loki-labels "app=pgwd,env=prod"
+```
+
+<Note>
+When you don't specify `-kube-context`, pgwd uses the **current context** from your kubeconfig (marked with `*` in `kubectl config get-contexts`).
+</Note>
+
+### Cluster Name Detection
+
+When using `-kube-postgres`, pgwd automatically detects the cluster name from your kubeconfig and includes it in Slack/Loki notifications:
+
+```bash
+# Cluster name detected automatically
+pgwd -kube-postgres default/svc/postgres \
+     -kube-context prod \
+     -db-url "postgres://..." \
+     -slack-webhook "https://..."
+
+# Override cluster name if needed
+pgwd -kube-postgres default/svc/postgres \
+     -kube-context prod \
+     -cluster "us-east-1-prod" \
+     -db-url "postgres://..." \
+     -slack-webhook "https://..."
+```
+
+<Accordion title="Slack notification with cluster context">
+  When monitoring Kubernetes PostgreSQL, Slack messages show:
+  
+  ```
+  ⚠️ pgwd – Threshold exceeded
+  
+  Total connections 85 >= 80
+  
+  Connections: total=85, active=12, idle=73 (limit total=80)
+  Cluster: prod-k8s
+  Client: svc/postgres
+  ```
+  
+  The cluster and client fields help you identify which environment triggered the alert.
+</Accordion>
+
+## Multiple PostgreSQL Instances
+
+Monitor several PostgreSQL instances simultaneously by using different local ports for port-forwarding.
+
+### Parallel Port Forwarding
+
+Each pgwd instance needs a unique `-kube-local-port` to avoid conflicts:
+
+```bash
+# Service A on local port 15432
+pgwd -kube-postgres mynamespace/svc/postgres-a \
+     -kube-local-port 15432 \
+     -db-url "postgres://postgres:DISCOVER_MY_PASSWORD@localhost:15432/db_a" \
+     -slack-webhook "https://..."
+
+# Service B on local port 15433
+pgwd -kube-postgres mynamespace/svc/postgres-b \
+     -kube-local-port 15433 \
+     -db-url "postgres://postgres:DISCOVER_MY_PASSWORD@localhost:15433/db_b" \
+     -slack-webhook "https://..."
+
+# Service C on local port 15434
+pgwd -kube-postgres mynamespace/svc/postgres-c \
+     -kube-local-port 15434 \
+     -db-url "postgres://postgres:DISCOVER_MY_PASSWORD@localhost:15434/db_c" \
+     -slack-webhook "https://..."
+```
+
+<Warning>
+If you run multiple pgwd instances **simultaneously** (e.g., in parallel scripts), ensure each uses a different `-kube-local-port`. Port conflicts will cause connection failures.
+
+Sequential checks (one after another) can reuse the same port.
+</Warning>
+
+## Password Discovery
+
+When using `-kube-postgres`, you can read the PostgreSQL password directly from the pod's environment:
+
+### Basic Discovery
+
+```bash
+# URL password = DISCOVER_MY_PASSWORD triggers automatic discovery
+pgwd -kube-postgres default/svc/postgres \
+     -db-url "postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/mydb" \
+     -slack-webhook "https://..."
+```
+
+**Default behavior:**
+- Looks for `POSTGRES_PASSWORD` environment variable in the pod
+- Falls back to `PGPASSWORD` if `POSTGRES_PASSWORD` isn't found
+- Uses the primary container in the pod
+
+### Custom Password Variable
+
+If your pod uses a different environment variable name:
+
+```bash
+pgwd -kube-postgres default/svc/postgres \
+     -kube-password-var "DB_PASSWORD" \
+     -db-url "postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/mydb" \
+     -slack-webhook "https://..."
+```
+
+### Multi-Container Pods
+
+For pods with multiple containers, specify which container holds the password:
+
+```bash
+pgwd -kube-postgres default/pod/postgres-0 \
+     -kube-password-var "POSTGRES_PASSWORD" \
+     -kube-password-container "postgres" \
+     -db-url "postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/mydb" \
+     -slack-webhook "https://..."
+```
+
+<Tip>
+Password discovery requires `kubectl exec` access to the pod. Ensure your RBAC permissions allow reading pod environment variables.
+</Tip>
+
+## Loki Labels for Environment Tagging
+
+Use Loki labels to organize metrics by environment, service, database, and more:
+
+```bash
+# Production API database
+pgwd -db-url "postgres://..." \
+     -loki-url "http://loki:3100/loki/api/v1/push" \
+     -loki-labels "app=pgwd,env=prod,service=api,db=primary,region=us-east-1"
+
+# Staging worker database
+pgwd -db-url "postgres://..." \
+     -loki-url "http://loki:3100/loki/api/v1/push" \
+     -loki-labels "app=pgwd,env=staging,service=worker,db=jobs"
+```
+
+### Querying by Label
+
+**Grafana/LogCLI queries:**
+
+```promql
+# All production alerts
+{app="pgwd", env="prod"}
+
+# Danger-level alerts across all environments
+{app="pgwd", level="danger"}
+
+# Specific service in staging
+{app="pgwd", env="staging", service="api"}
+
+# All stale connection alerts
+{app="pgwd", threshold="stale"}
+```
+
+<CardGroup cols={2}>
+  <Card title="Standard Labels" icon="tag">
+    - `app=pgwd` (always included)
+    - `env` (dev/staging/prod)
+    - `service` (api/worker/web)
+    - `db` (database name)
+  </Card>
+  
+  <Card title="Auto-Added Labels" icon="robot">
+    - `threshold` (total/active/idle/stale/test)
+    - `level` (attention/alert/danger)
+    - `namespace` (when using `-kube-postgres`)
+  </Card>
+</CardGroup>
+
+## Real-World Cron Example: Multiple Services
+
+This example monitors three PostgreSQL instances in Kubernetes from a cron job, with separate check and heartbeat scripts.
+
+### Check Script (Every 5 Minutes)
+
+Runs checks against three services, alerting only when thresholds are exceeded.
+
+**File: `~/bin/pgwd-cron.sh`**
+
+```bash
+#!/bin/bash
+mkdir -p ~/log
+export KUBECONFIG=/path/to/your/kubeconfig
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+export PATH="/usr/local/bin:$PATH"
+PGWD=${PGWD:-/usr/local/bin/pgwd}
+
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) checking postgres-a"
+$PGWD -kube-postgres mynamespace/svc/postgres-a \
+  -kube-local-port 15432 \
+  -db-url 'postgres://postgres:DISCOVER_MY_PASSWORD@localhost:15432/db_a' \
+  -loki-url "http://loki:3100/loki/api/v1/push" \
+  -loki-labels "app=pgwd,env=prod,service=postgres-a"
+
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) checking postgres-b"
+$PGWD -kube-postgres mynamespace/svc/postgres-b \
+  -kube-local-port 15433 \
+  -db-url 'postgres://postgres:DISCOVER_MY_PASSWORD@localhost:15433/db_b' \
+  -loki-url "http://loki:3100/loki/api/v1/push" \
+  -loki-labels "app=pgwd,env=prod,service=postgres-b"
+
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) checking postgres-c"
+$PGWD -kube-postgres mynamespace/svc/postgres-c \
+  -kube-local-port 15434 \
+  -db-url 'postgres://postgres:DISCOVER_MY_PASSWORD@localhost:15434/db_c' \
+  -loki-url "http://loki:3100/loki/api/v1/push" \
+  -loki-labels "app=pgwd,env=prod,service=postgres-c"
+
+exit 0
+```
+
+<Note>
+**Why different ports?** Each `kubectl port-forward` session needs a unique local port. Sequential checks (one after another) can share the same port since they don't run simultaneously, but using different ports is safer if scripts overlap or run in parallel.
+</Note>
+
+### Heartbeat Script (Every 2 Hours)
+
+Sends test notifications to verify the monitoring pipeline is working.
+
+**File: `~/bin/pgwd-heartbeat.sh`**
+
+```bash
+#!/bin/bash
+mkdir -p ~/log
+export KUBECONFIG=/path/to/your/kubeconfig
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+export PATH="/usr/local/bin:$PATH"
+PGWD=${PGWD:-/usr/local/bin/pgwd}
+
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) heartbeat postgres-a"
+$PGWD -kube-postgres mynamespace/svc/postgres-a \
+  -kube-local-port 25432 \
+  -db-url 'postgres://postgres:DISCOVER_MY_PASSWORD@localhost:25432/db_a' \
+  -force-notification
+
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) heartbeat postgres-b"
+$PGWD -kube-postgres mynamespace/svc/postgres-b \
+  -kube-local-port 25433 \
+  -db-url 'postgres://postgres:DISCOVER_MY_PASSWORD@localhost:25433/db_b' \
+  -force-notification
+
+exit 0
+```
+
+<Tip>
+**Why different ports for heartbeat?** Using ports 25432+ ensures no conflicts if the heartbeat script runs at the same time as the check script (e.g., at the top of the hour).
+</Tip>
+
+### Crontab Configuration
+
+**Edit crontab:** `crontab -e`
+
+```cron
+PATH=/usr/bin:/bin
+
+# Check all services every 5 minutes
+*/5 * * * * /bin/bash -l -c '~/bin/pgwd-cron.sh >> ~/log/pgwd.log 2>&1'
+
+# Heartbeat every 2 hours (verify monitoring is alive)
+0 */2 * * * /bin/bash -l -c '~/bin/pgwd-heartbeat.sh >> ~/log/pgwd.log 2>&1'
+```
+
+**Important cron considerations:**
+
+1. **PATH must include `kubectl`:** Set `PATH` in the crontab header or export it in the script
+2. **Redirect stderr:** Use `2>&1` to capture errors in the log file
+3. **KUBECONFIG:** Export the path to your kubeconfig in the script
+4. **Use `-l` flag:** `bash -l` loads your login profile, ensuring environment consistency
+
+<Warning>
+Cron runs with a **minimal environment**. If you see "kubectl not found" errors, add this to your scripts:
+
+```bash
+export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
+```
+
+Alternatively, use full paths to kubectl: `/usr/local/bin/kubectl`
+</Warning>
+
+## Validating Kubernetes Access
+
+Before deploying, verify that pgwd can access your Kubernetes cluster:
+
+```bash
+# Validate default context
+pgwd -kube-postgres default/svc/postgres \
+     -validate-k8s-access
+
+# Validate specific context
+pgwd -kube-context staging \
+     -validate-k8s-access
+
+# Output example:
+# ✓ kubectl found in PATH
+# ✓ Context 'staging' is valid
+# ✓ Can list pods in namespace 'default'
+# ✓ Kubernetes access validated
+```
+
+<Note>
+`-validate-k8s-access` runs connectivity checks and then exits. It doesn't require `-db-url` or notifier configuration.
+</Note>
+
+## Environment-Specific Threshold Examples
+
+### Development: Aggressive Leak Detection
+
+```bash
+export PGWD_DB_URL="postgres://dev:dev@dev-db:5432/dev"
+export PGWD_STALE_AGE=300        # 5 minutes
+export PGWD_THRESHOLD_STALE=1     # Zero tolerance
+export PGWD_THRESHOLD_LEVELS="60,75,90"  # Lower capacity thresholds
+export PGWD_INTERVAL=120
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/.../dev-alerts"
+
+pgwd
+```
+
+**Rationale:** Catch bugs early in development with aggressive leak detection and lower capacity thresholds.
+
+### Staging: Balanced Monitoring
+
+```bash
+export PGWD_DB_URL="postgres://staging:pass@staging-db:5432/staging"
+export PGWD_STALE_AGE=600         # 10 minutes
+export PGWD_THRESHOLD_STALE=3     # Tolerate a few long-lived connections
+export PGWD_THRESHOLD_LEVELS="70,85,95"  # Standard thresholds
+export PGWD_INTERVAL=300          # Check every 5 minutes
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/.../staging-alerts"
+export PGWD_LOKI_URL="http://loki-staging:3100/loki/api/v1/push"
+export PGWD_LOKI_LABELS="app=pgwd,env=staging"
+
+pgwd
+```
+
+**Rationale:** More relaxed than dev, with historical tracking via Loki.
+
+### Production: Conservative and Comprehensive
+
+```bash
+export PGWD_DB_URL="postgres://prod:pass@prod-db:5432/prod"
+export PGWD_STALE_AGE=900         # 15 minutes
+export PGWD_THRESHOLD_STALE=5     # Allow legitimate long operations
+export PGWD_THRESHOLD_LEVELS="75,85,95"  # Standard production thresholds
+export PGWD_THRESHOLD_IDLE=60     # Monitor idle pool size
+export PGWD_INTERVAL=60           # Frequent checks
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/.../prod-alerts"
+export PGWD_LOKI_URL="http://loki-prod:3100/loki/api/v1/push"
+export PGWD_LOKI_LABELS="app=pgwd,env=prod,priority=high"
+
+pgwd
+```
+
+**Rationale:** Comprehensive monitoring with minimal false positives, both immediate (Slack) and historical (Loki) alerting.
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Isolate Secrets" icon="lock">
+    Use environment-specific env files or secret managers (Vault, K8s Secrets) instead of hardcoding credentials
+  </Card>
+  
+  <Card title="Environment Tagging" icon="tags">
+    Always include `env` in Loki labels for clear environment separation in queries
+  </Card>
+  
+  <Card title="Port Management" icon="network-wired">
+    Document port assignments (15432=service-a, 15433=service-b) to avoid conflicts
+  </Card>
+  
+  <Card title="Test Context Access" icon="check">
+    Use `-validate-k8s-access` before deploying to verify RBAC permissions
+  </Card>
+</CardGroup>
+
+### Deployment Checklist
+
+- [ ] Verify `kubectl` is in PATH for cron jobs
+- [ ] Test each context with `-validate-k8s-access`
+- [ ] Ensure unique `-kube-local-port` values for parallel checks
+- [ ] Configure environment-specific Slack channels or webhooks
+- [ ] Add `env` labels to all Loki configurations
+- [ ] Test password discovery with `DISCOVER_MY_PASSWORD`
+- [ ] Validate cron logs capture both stdout and stderr (`2>&1`)
+- [ ] Set up heartbeat monitoring to verify the pipeline stays alive
+
+## Troubleshooting
+
+### "kubectl not found in PATH"
+
+**Cause:** Cron's minimal environment doesn't include the directory where `kubectl` lives.
+
+**Solution:** Export PATH in your script:
+```bash
+export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
+```
+
+Or use full path:
+```bash
+/usr/local/bin/kubectl version --client
+```
+
+### Port-Forward Conflicts
+
+**Symptom:** "bind: address already in use"
+
+**Cause:** Another pgwd instance or `kubectl port-forward` is using the same local port.
+
+**Solution:** Use unique `-kube-local-port` values:
+```bash
+-kube-local-port 15432  # Service A
+-kube-local-port 15433  # Service B
+```
+
+### Password Discovery Fails
+
+**Symptom:** "could not discover password from pod"
+
+**Causes:**
+1. Wrong environment variable name
+2. Wrong container name
+3. RBAC permissions don't allow `kubectl exec`
+
+**Solution:**
+```bash
+# Check pod environment
+kubectl exec -n namespace pod-name -- env | grep -i password
+
+# Specify correct var and container
+pgwd -kube-password-var "DB_PASSWORD" \
+     -kube-password-container "postgres" \
+     ...
+```
+
+### Wrong Cluster Alerts
+
+**Symptom:** Alerts say they're from "staging" but you're monitoring "prod"
+
+**Cause:** Using the wrong kubeconfig context.
+
+**Solution:** Explicitly set `-kube-context`:
+```bash
+pgwd -kube-context prod -kube-postgres prod-ns/svc/postgres ...
+```
+
+Verify current context:
+```bash
+kubectl config current-context
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Monitoring Strategies" icon="chart-mixed" href="/guides/monitoring-strategies">
+    Learn about deployment modes and threshold selection
+  </Card>
+  
+  <Card title="Stale Connections" icon="clock" href="/guides/stale-connections">
+    Configure connection leak detection across environments
+  </Card>
+</CardGroup>

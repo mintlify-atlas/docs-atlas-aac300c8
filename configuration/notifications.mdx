@@ -1,0 +1,495 @@
+---
+title: Notification Configuration
+description: Set up Slack and Loki notifications for connection alerts
+---
+
+pgwd sends alerts to **Slack** and/or **Loki** when thresholds are exceeded or when connection failures occur. You can use one or both notifiers simultaneously, and test delivery before relying on real alerts.
+
+## Slack Notifications
+
+Slack notifications are sent via [Incoming Webhooks](https://api.slack.com/messaging/webhooks). Messages include connection stats, threshold details, and severity indicators.
+
+### Setup
+
+<Steps>
+  <Step title="Create Incoming Webhook">
+    1. Go to your Slack workspace settings
+    2. Navigate to **Apps** → **Incoming Webhooks**
+    3. Click **Add to Slack** and select a channel
+    4. Copy the Webhook URL (format: `https://hooks.slack.com/services/T00/B00/xxx`)
+  </Step>
+
+  <Step title="Configure pgwd">
+    Set the webhook URL via CLI flag or environment variable.
+    
+    <CodeGroup>
+    ```bash Environment Variable
+    export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/T00/B00/xxx"
+    pgwd -db-url "postgres://..."
+    ```
+    
+    ```bash CLI Flag
+    pgwd -db-url "postgres://..." \
+         -slack-webhook "https://hooks.slack.com/services/T00/B00/xxx"
+    ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Test Delivery">
+    Use `-force-notification` to send a test message and validate the webhook.
+    
+    ```bash
+    pgwd -db-url "postgres://..." \
+         -slack-webhook "https://hooks.slack.com/services/T00/B00/xxx" \
+         -force-notification
+    ```
+  </Step>
+</Steps>
+
+<ParamField path="slack-webhook" type="string" default="">
+  Slack Incoming Webhook URL for sending alerts.
+  
+  **Environment variable**: `PGWD_SLACK_WEBHOOK`
+  
+  **Format**: `https://hooks.slack.com/services/T.../B.../...`
+</ParamField>
+
+### Message Format
+
+Slack messages are sent as plain text with structured information:
+
+```
+:warning: *pgwd* – Threshold exceeded
+*<Message>*
+Connections: total=<Total>, active=<Active>, idle=<Idle> (limit <Threshold>=<ThresholdValue>)
+```
+
+**Example alert**:
+```
+:warning: *pgwd* – Threshold exceeded
+*Total connections 85 >= 80*
+Connections: total=85, active=42, idle=43 (limit total=80)
+```
+
+### Level Mode Colors and Emojis
+
+When using **three-tier level mode** (`-threshold-levels`), Slack messages include distinct colors and emojis based on severity:
+
+| Level | Severity | Color | Emoji | Threshold |
+|-------|----------|-------|-------|----------|
+| 1 | Attention | Yellow | 🟡 | 75% (default) |
+| 2 | Alert | Orange | 🟠 | 85% (default) |
+| 3 | Danger | Red | 🔴 | 95% (default) |
+
+**Example danger alert**:
+```
+🔴 *pgwd* – Threshold exceeded
+*Active connections 97 >= 95 (95% of max) — danger*
+Connections: total=98, active=97, idle=1 (limit active=95)
+```
+
+## Loki Notifications
+
+Loki notifications push log entries to a [Loki](https://grafana.com/oss/loki/) instance via the push API. Each alert is one log line with associated labels for querying in Grafana.
+
+### Setup
+
+<Steps>
+  <Step title="Get Loki Push URL">
+    The Loki push API endpoint is typically:
+    ```
+    http://<loki-host>:3100/loki/api/v1/push
+    ```
+    
+    For Grafana Cloud, use your provided Loki URL:
+    ```
+    https://logs-prod-us-central1.grafana.net/loki/api/v1/push
+    ```
+  </Step>
+
+  <Step title="Configure pgwd">
+    Set the Loki URL and optional labels.
+    
+    <CodeGroup>
+    ```bash Basic Configuration
+    export PGWD_LOKI_URL="http://localhost:3100/loki/api/v1/push"
+    pgwd -db-url "postgres://..."
+    ```
+    
+    ```bash With Labels
+    export PGWD_LOKI_URL="http://loki:3100/loki/api/v1/push"
+    export PGWD_LOKI_LABELS="app=pgwd,env=prod,db=myapp"
+    pgwd -db-url "postgres://..."
+    ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Test Delivery">
+    Send a test log entry to validate the Loki push API.
+    
+    ```bash
+    pgwd -db-url "postgres://..." \
+         -loki-url "http://localhost:3100/loki/api/v1/push" \
+         -force-notification
+    ```
+  </Step>
+</Steps>
+
+<ParamField path="loki-url" type="string" default="">
+  Loki push API URL for sending log entries.
+  
+  **Environment variable**: `PGWD_LOKI_URL`
+  
+  **Format**: `http(s)://<host>:<port>/loki/api/v1/push`
+</ParamField>
+
+<ParamField path="loki-labels" type="string" default="">
+  Comma-separated key=value labels for the Loki log stream. Labels are used to filter and query logs in Grafana.
+  
+  **Environment variable**: `PGWD_LOKI_LABELS`
+  
+  **Format**: `key1=value1,key2=value2`
+  
+  **Default labels**: If not set, pgwd adds `app=pgwd` automatically
+  
+  **Additional labels**: pgwd always adds:
+  - `threshold`: Type of threshold exceeded (total, active, idle, stale, test, connect_failure)
+  - `level`: Severity level (attention, alert, danger) when using level mode
+  - `namespace`: Kubernetes namespace when using `-kube-postgres`
+</ParamField>
+
+### Log Format
+
+Each alert is one log line with the following format:
+
+```
+pgwd threshold exceeded: <Message> | total=<Total> active=<Active> idle=<Idle> (limit <Threshold>=<ThresholdValue>)
+```
+
+**Example log entry**:
+```
+pgwd threshold exceeded: Total connections 85 >= 80 | total=85 active=42 idle=43 (limit total=80)
+```
+
+### Querying Logs in Grafana
+
+Use label selectors to filter pgwd alerts in Grafana:
+
+<CodeGroup>
+```promql All pgwd Alerts
+{app="pgwd"}
+```
+
+```promql Production Environment
+{app="pgwd", env="prod"}
+```
+
+```promql Danger Level Alerts
+{app="pgwd", level="danger"}
+```
+
+```promql Total Connection Alerts
+{app="pgwd", threshold="total"}
+```
+
+```promql Kubernetes Namespace
+{app="pgwd", namespace="production"}
+```
+</CodeGroup>
+
+## Using Both Notifiers
+
+You can configure both Slack and Loki simultaneously. Each alert is sent to **all configured notifiers**.
+
+```bash
+# Send alerts to both Slack and Loki
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/T00/B00/xxx"
+export PGWD_LOKI_URL="http://localhost:3100/loki/api/v1/push"
+export PGWD_LOKI_LABELS="app=pgwd,env=prod,db=myapp"
+
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" \
+     -threshold-total 80
+
+# When threshold is exceeded:
+# ✓ Message sent to Slack
+# ✓ Log entry pushed to Loki
+```
+
+<Note>
+  When using both notifiers, each alert triggers sends to **both** Slack and Loki. You don't need to configure routing — pgwd handles delivery to all configured notifiers automatically.
+</Note>
+
+## Testing Notifications
+
+### Dry Run Mode
+
+**Dry run** mode prints connection stats to stdout without sending notifications. Use this to see current values without triggering alerts.
+
+<ParamField path="dry-run" type="boolean" default="false">
+  Only print connection stats, do not send notifications to any notifiers.
+  
+  **Environment variable**: `PGWD_DRY_RUN` (set to `1`, `true`, or `yes`)
+</ParamField>
+
+```bash
+# Check current stats without alerting
+pgwd -db-url "postgres://user:pass@localhost:5432/mydb" -dry-run
+
+# Output:
+# total=42 active=3 idle=39 max_connections=100
+```
+
+<Note>
+  In dry run mode, no HTTP calls are made to Slack or Loki. Thresholds are still evaluated, but notifications are suppressed.
+</Note>
+
+### Force Notification
+
+**Force notification** sends a test message to all configured notifiers regardless of threshold status. Use this to validate delivery and message format before relying on real alerts.
+
+<ParamField path="force-notification" type="boolean" default="false">
+  Always send at least one test notification to validate delivery and format. Requires at least one notifier.
+  
+  **Environment variable**: `PGWD_FORCE_NOTIFICATION` (set to `1`, `true`, or `yes`)
+</ParamField>
+
+<CodeGroup>
+```bash Test Slack
+pgwd -db-url "postgres://..." \
+     -slack-webhook "https://hooks.slack.com/services/T00/B00/xxx" \
+     -force-notification
+
+# Sends test message to Slack immediately
+```
+
+```bash Test Loki
+pgwd -db-url "postgres://..." \
+     -loki-url "http://localhost:3100/loki/api/v1/push" \
+     -force-notification
+
+# Pushes test log entry to Loki
+```
+
+```bash Test Both
+pgwd -db-url "postgres://..." \
+     -slack-webhook "https://..." \
+     -loki-url "http://localhost:3100/loki/api/v1/push" \
+     -force-notification
+
+# Sends test to both Slack and Loki
+```
+</CodeGroup>
+
+**Test message format**:
+```
+:information_source: *pgwd* – Test notification
+*Test notification — delivery check (force-notification).*
+Connections: total=42, active=3, idle=39 (limit test=0)
+```
+
+<Warning>
+  `-force-notification` requires at least one notifier to be configured. If no notifiers are set, pgwd will exit with an error.
+</Warning>
+
+## Connection Failure Notifications
+
+When pgwd **cannot connect to PostgreSQL**, it automatically sends a notification to all configured notifiers. This happens regardless of threshold configuration and **does not require** the deprecated `-notify-on-connect-failure` flag.
+
+### Automatic Alerts
+
+Connection failure alerts are sent when:
+- PostgreSQL is unreachable (connection refused, timeout)
+- Authentication fails (invalid credentials)
+- Database is saturated ("too many clients already" error)
+- Network issues prevent connection
+
+<Note>
+  Connection failure notifications are **always sent** when at least one notifier is configured. No additional flags are required.
+</Note>
+
+### Message Format
+
+**Generic connection failure**:
+```
+🔴 *pgwd* – Connection failure
+*pgwd could not connect to Postgres. Check database URL, connectivity, credentials, or infrastructure.*
+Connections: total=0, active=0, idle=0 (limit connect_failure=0)
+```
+
+**Too many clients** (database saturated):
+```
+🔴 *pgwd* – Connection failure
+*Postgres rejected connection: too many clients already (max_connections exceeded). Database is saturated — urgent.*
+Connections: total=0, active=0, idle=0 (limit too_many_clients=0)
+```
+
+### Connection Failure with Dry Run
+
+<Warning>
+  Connection failure notifications are sent **even in dry-run mode**. Infrastructure failures are critical and must be visible regardless of dry-run settings.
+</Warning>
+
+```bash
+# Dry run still sends connection failure alerts
+pgwd -db-url "postgres://unreachable-host:5432/mydb" \
+     -slack-webhook "https://..." \
+     -dry-run
+
+# If connection fails, Slack alert is sent
+# (normal threshold alerts are suppressed in dry run)
+```
+
+## Real-World Examples
+
+### Example 1: Production Monitoring with Slack
+
+```bash
+# Production setup: Slack alerts for connection issues
+export PGWD_DB_URL="postgres://pgwd:secret@prod-db:5432/production"
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/T00/B00/xxx"
+export PGWD_THRESHOLD_LEVELS="75,85,95"
+export PGWD_INTERVAL=60
+
+pgwd
+# Monitors every 60 seconds
+# Alerts sent to #production-alerts Slack channel
+```
+
+### Example 2: Multi-Environment with Loki Labels
+
+<CodeGroup>
+```bash Development
+export PGWD_DB_URL="postgres://localhost:5432/dev_db"
+export PGWD_LOKI_URL="http://loki:3100/loki/api/v1/push"
+export PGWD_LOKI_LABELS="env=dev,app=pgwd,db=dev_db"
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/.../dev-alerts"
+
+pgwd -interval 120
+```
+
+```bash Production
+export PGWD_DB_URL="postgres://prod-db:5432/prod_db"
+export PGWD_LOKI_URL="http://loki:3100/loki/api/v1/push"
+export PGWD_LOKI_LABELS="env=prod,app=pgwd,db=prod_db,region=us-east"
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/.../prod-alerts"
+export PGWD_CLUSTER="production-us-east"
+
+pgwd -interval 60
+```
+</CodeGroup>
+
+### Example 3: Test Webhooks Before Deployment
+
+```bash
+# Validate Slack webhook
+pgwd -db-url "postgres://localhost:5432/testdb" \
+     -slack-webhook "https://hooks.slack.com/services/T00/B00/xxx" \
+     -force-notification
+
+# Check Slack channel for test message
+
+# Validate Loki push API
+pgwd -db-url "postgres://localhost:5432/testdb" \
+     -loki-url "http://localhost:3100/loki/api/v1/push" \
+     -loki-labels="app=pgwd,env=test" \
+     -force-notification
+
+# Query Grafana: {app="pgwd", threshold="test"}
+```
+
+### Example 4: Kubernetes with Namespace Labels
+
+```bash
+# Kubernetes deployment with automatic namespace labels
+export PGWD_KUBE_POSTGRES="production/svc/postgres"
+export PGWD_DB_URL="postgres://postgres:DISCOVER_MY_PASSWORD@localhost:5432/mydb"
+export PGWD_LOKI_URL="http://loki.monitoring:3100/loki/api/v1/push"
+export PGWD_LOKI_LABELS="app=pgwd,cluster=prod-us-east"
+export PGWD_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+
+pgwd -interval 60
+
+# Loki logs include: namespace=production (auto-added)
+# Query: {app="pgwd", namespace="production"}
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Slack webhook not receiving messages">
+    1. Verify webhook URL is correct and complete
+    2. Check network connectivity to `hooks.slack.com`
+    3. Ensure webhook is not disabled in Slack settings
+    4. Test with `-force-notification` to isolate threshold issues
+    5. Check pgwd logs for HTTP errors
+    
+    ```bash
+    # Test webhook delivery
+    pgwd -db-url "postgres://..." \
+         -slack-webhook "https://hooks.slack.com/services/T00/B00/xxx" \
+         -force-notification
+    ```
+  </Accordion>
+
+  <Accordion title="Loki not receiving logs">
+    1. Verify Loki URL includes full path: `/loki/api/v1/push`
+    2. Check Loki server is running and accessible
+    3. Ensure no firewall blocking traffic to Loki port (default 3100)
+    4. Test with `-force-notification` and query Grafana immediately
+    5. Check Loki server logs for rejected pushes
+    
+    ```bash
+    # Test Loki push
+    pgwd -db-url "postgres://..." \
+         -loki-url "http://loki:3100/loki/api/v1/push" \
+         -force-notification
+    
+    # Query in Grafana:
+    # {app="pgwd", threshold="test"}
+    ```
+  </Accordion>
+
+  <Accordion title="Connection failure alerts not sent">
+    Connection failure alerts require at least one notifier. Ensure either `-slack-webhook` or `-loki-url` is configured.
+    
+    ```bash
+    # Error: no notifier
+    pgwd -db-url "postgres://unreachable:5432/db"
+    
+    # Correct: alerts sent on failure
+    pgwd -db-url "postgres://unreachable:5432/db" \
+         -slack-webhook "https://..."
+    ```
+  </Accordion>
+
+  <Accordion title="Too many alerts being sent">
+    1. Check threshold levels — they may be too low
+    2. Use level mode to reduce alert frequency (only highest level fires)
+    3. Increase `-interval` to reduce check frequency
+    4. Use `-dry-run` to observe stats before enabling notifications
+    
+    ```bash
+    # Observe without alerting
+    pgwd -db-url "postgres://..." -dry-run
+    
+    # Adjust thresholds after observation
+    pgwd -db-url "postgres://..." \
+         -threshold-levels 80,90,95 \
+         -slack-webhook "https://..."
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Kubernetes Integration" icon="dharmachakra" href="/configuration/kubernetes">
+    Connect to Postgres in Kubernetes clusters
+  </Card>
+  <Card title="Monitoring Strategies" icon="chart-line" href="/guides/monitoring-strategies">
+    Best practices for alert configuration
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/reference/troubleshooting">
+    Common issues and solutions
+  </Card>
+</CardGroup>
