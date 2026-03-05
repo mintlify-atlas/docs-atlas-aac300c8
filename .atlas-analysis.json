@@ -1,0 +1,93 @@
+{
+  "projectType": "cli-tool",
+  "projectName": "pgwd",
+  "projectDescription": "Go CLI that monitors PostgreSQL connection counts and notifies via Slack and Loki when thresholds are exceeded",
+  "theme": "aspen",
+  "primaryColor": "#848c8e",
+  "lightColor": "#11161e",
+  "darkColor": "#cfd0d2",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/overview",
+              "configuration/thresholds",
+              "configuration/notifications",
+              "configuration/kubernetes"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/docker",
+              "deployment/systemd",
+              "deployment/cron"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/monitoring-strategies",
+              "guides/stale-connections",
+              "guides/multi-environment"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Commands",
+            "pages": [
+              "reference/cli",
+              "reference/environment-variables"
+            ]
+          },
+          {
+            "group": "Resources",
+            "pages": [
+              "reference/troubleshooting",
+              "reference/examples"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Monitor PostgreSQL connection counts (total, active, idle, stale)",
+    "Multi-tier threshold alerts (attention/alert/danger levels)",
+    "Slack and Loki notification integration",
+    "Kubernetes native support with kubectl port-forward",
+    "Flexible deployment modes (one-shot, daemon, cron)",
+    "Connection leak detection via stale connection monitoring",
+    "Environment variable and CLI flag configuration"
+  ],
+  "publicApiSurface": [
+    "pgwd -db-url <url> -threshold-total <n>",
+    "pgwd -db-url <url> -threshold-levels <percentages>",
+    "pgwd -db-url <url> -threshold-active <n>",
+    "pgwd -db-url <url> -threshold-idle <n>",
+    "pgwd -db-url <url> -stale-age <seconds> -threshold-stale <n>",
+    "pgwd -kube-postgres <namespace>/<type>/<name>",
+    "pgwd -slack-webhook <url>",
+    "pgwd -loki-url <url> -loki-labels <labels>",
+    "pgwd -interval <seconds>",
+    "pgwd -dry-run",
+    "pgwd -force-notification",
+    "pgwd --version"
+  ]
+}
